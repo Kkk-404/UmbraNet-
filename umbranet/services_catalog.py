@@ -8,7 +8,14 @@ SERVICES-совместимые алиасы для существующей в�
 
 from __future__ import annotations
 
-from core.service_profiles import check_domains, preset_domains, ui_services
+from core.service_profiles import (
+    check_domains,
+    preset_domains,
+    service_allowed_in_mode,
+    service_bypass,
+    service_bypass_map,
+    ui_services,
+)
 from core.service_profiles import services_in_category as _services_in_category
 
 # название категории -> (эмодзи, два цвета градиента иконки)
@@ -23,6 +30,9 @@ CATEGORIES = {
 # сервис -> (категория, эмодзи, [домены])
 # Оставляем имя SERVICES для обратной совместимости с routing.py.
 SERVICES = ui_services()
+
+# сервис -> 'dns' | 'dpi' — какой режим нужен, чтобы сервис открылся
+SERVICE_BYPASS = service_bypass_map()
 
 # Все домены из пресетов (для отображения в ручном списке без дублирования метки)
 PRESET_DOMAINS = preset_domains()

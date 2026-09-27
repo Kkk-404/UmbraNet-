@@ -264,3 +264,56 @@ def test_validate_all_reports_each_strategy(manager):
     rows = {row["id"]: row for row in manager.validate_all()}
     assert rows["uz1"]["ok"] is True and rows["uz1"]["args_count"] > 0
     assert rows["uz9"]["ok"] is False and rows["uz9"]["error"], "нет причины отказа"
+
+
+# ── Discord CDN (аватарки/картинки) ─────────────────────────────────────────
+
+def test_discord_cdn_gets_a_mild_section(manager):
+    """CDN Discord не должен идти под тот же агрессивный desync, что gateway.
+
+    Иначе чат открывается, а аватарки и картинки — нет (Cloudflare HTTP/2).
+    """
+    from strategy_manager import is_discord_cdn_host
+
+    _simple(manager, args=[
+        "--wf-tcp=443",
+        "--wf-udp=443",
+        "{hostlist}",
+        "--dpi-desync=fake,multisplit",
+    ])
+    args = manager.get_args("uz1", routed_domains=[
+        "discord.com",
+        "gateway.discord.gg",
+        "cdn.discordapp.com",
+        "media.discordapp.net",
+        "images-ext-2.discordapp.net",
+    ])
+    assert args, manager.last_error
+    main = manager.active_hostlist_path.read_text(encoding="utf-8").splitlines()
+    cdn = manager.cdn_hostlist_path.read_text(encoding="utf-8").splitlines()
+    assert "discord.com" in main
+    assert "gateway.discord.gg" in main
+    assert "cdn.discordapp.com" in cdn
+    assert "media.discordapp.net" in cdn
+    assert "images-ext-2.discordapp.net" in cdn
+    assert "cdn.discordapp.com" not in main
+    assert any(a.endswith("active_discord_cdn_hostlist.txt") or "active_discord_cdn_hostlist.txt" in a
+               for a in args)
+    assert "--dpi-desync-fooling=md5sig" in args
+    assert "--dpi-desync-cutoff=n2" in args
+    # Мягкая секция стоит после --wf-* и до агрессивного тела.
+    wf_udp = args.index("--wf-udp=443")
+    mild = args.index("--dpi-desync-fooling=md5sig")
+    aggressive = args.index("--dpi-desync=fake,multisplit")
+    assert wf_udp < mild < aggressive
+    assert is_discord_cdn_host("images-ext-2.discordapp.net")
+    assert not is_discord_cdn_host("discord.com")
+
+
+def test_no_cdn_split_without_discord(manager):
+    """Без Discord лишняя секция не появляется — чужие сайты как раньше."""
+    _simple(manager, args=["--wf-tcp=443", "{hostlist}", "--dpi-desync=fake"])
+    args = manager.get_args("uz1", routed_domains=["example.com", "youtube.com"])
+    assert "--dpi-desync-fooling=md5sig" not in args
+    assert not manager.cdn_hostlist_path.exists()
+    assert "example.com" in manager.active_hostlist_path.read_text(encoding="utf-8")

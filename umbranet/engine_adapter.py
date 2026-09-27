@@ -1188,12 +1188,36 @@ def reset_edge_doh():
 
 
 def get_running_processes() -> list:
-    """Список запущенных процессов (pid/name/exe). Пусто, если недоступно."""
+    """Список запущенных процессов (pid/name). Пусто, если недоступно.
+
+    Путь к .exe здесь специально не отдаём: обход всех процессов с exe
+    вешает UI. Для иконок — resolve_process_exe / resolve_process_exes.
+    """
     try:
         from process_monitor import get_running_processes as _g  # type: ignore
         return _g()
     except Exception:
         return []
+
+
+def resolve_process_exe(name: str) -> str | None:
+    """Абсолютный путь к .exe процесса по имени, либо None."""
+    try:
+        from process_monitor import resolve_process_exe as _g  # type: ignore
+        path = _g(name)
+        return str(path) if path else None
+    except Exception:
+        return None
+
+
+def resolve_process_exes(names, interrupt=None) -> dict:
+    """Пакетный поиск путей к .exe. interrupt() → True останавливает обход."""
+    try:
+        from process_monitor import resolve_process_exes as _g  # type: ignore
+        found = _g(names, interrupt=interrupt)
+        return dict(found) if found else {}
+    except Exception:
+        return {}
 
 
 # DoH-URL встроенного профиля xbox-dns.ru (для окна «Тест DNS»).
@@ -1412,7 +1436,8 @@ def set_update_channel(include_prereleases: bool) -> None:
 
 
 def auto_transport_enabled() -> bool:
-    return bool(_load_ui_state().get("auto_transport", False))
+    """«Авто» в маршруте DNS. Для новой установки — включён."""
+    return bool(_load_ui_state().get("auto_transport", True))
 
 
 def set_auto_transport(enabled: bool) -> None:
@@ -1479,6 +1504,26 @@ def set_favorite_services(services: list[str], valid_services: list[str] | None 
         if svc not in out:
             out.append(svc)
     _patch_ui_state("favorite_services", out)
+
+
+_DEV_MODE: bool | None = None
+
+
+def get_developer_mode() -> bool:
+    """Режим разработчика: снять блокировку DNS/DPI у сервисов в главном меню."""
+    global _DEV_MODE
+    if _DEV_MODE is None:
+        try:
+            _DEV_MODE = bool(_load_ui_state().get("developer_mode", False))
+        except Exception:
+            _DEV_MODE = False
+    return bool(_DEV_MODE)
+
+
+def set_developer_mode(on: bool) -> None:
+    global _DEV_MODE
+    _DEV_MODE = bool(on)
+    _patch_ui_state("developer_mode", _DEV_MODE)
 
 
 def measure_transports() -> dict:

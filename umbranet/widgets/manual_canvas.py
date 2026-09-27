@@ -6,7 +6,8 @@ UmbraNet - «телеграмизация» ручного списка «Дис
 и как Telegram Desktop. Ни одной карточки-QFrame с QLabel-ами и
 QPushButton-ами на строку: иконка, чип типа, имя, бейдж сервиса и кнопка
 удаления ✕ рисуются кистью, hover подсвечивает карточку, ползунок
-прокрутки плавно затухает.
+прокрутки плавно затухает. У процессов вместо эмодзи 🎮 может лежать
+настоящая иконка .exe в item["pixmap"] (QPixmap); если её нет — 🎮.
 
 Семантика кнопки ✕ (как раньше):
   подписка           -> subscriptionRemoved(url)
@@ -36,7 +37,7 @@ from PySide6.QtCore import (
     QVariantAnimation,
     Signal,
 )
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QWidget
 
 from umbranet import theme
@@ -47,6 +48,7 @@ CARD_STRIDE = 42     # шаг карточек (36 + spacing 6)
 SB_PAD, SB_W = 10, 6
 
 ICON_X, ICON_W = 10, 22       # иконка
+ICON_PIXMAP = 16              # реальная иконка .exe (вместо эмодзи 🎮)
 KIND_X, KIND_W = 40, 66       # чип «домен/процесс/подписка»
 KIND_H = 20
 NAME_X = 114                  # имя (после чипа + отступ)
@@ -115,9 +117,34 @@ class ManualCanvas(QWidget):
     # ══════════════════ публичный API ═════════════════════════════════════
 
     def set_items(self, items: list[dict]):
-        """items: [{name, key, icon, badge, badge_color, display}, ...]"""
+        """items: [{name, key, icon, badge, badge_color, display, pixmap?}, ...]"""
         self._items = items
         self._refilter()
+
+    def try_fill_process_icons(self):
+        """Докинуть иконки процессам, у которых ещё только 🎮.
+
+        Список имён мог не измениться (кэш routing), а chrome за это время
+        запустился — тогда путь к .exe уже находится. Без пересборки всего
+        списка подставляем pixmap и перерисовываем.
+        """
+        try:
+            from umbranet.process_icons import pixmap_for_process
+        except Exception:
+            return
+        changed = False
+        for it in self._items:
+            if it.get("key") != "routed_processes":
+                continue
+            pm = it.get("pixmap")
+            if isinstance(pm, QPixmap) and not pm.isNull():
+                continue
+            fresh = pixmap_for_process(it.get("name") or "")
+            if fresh is not None:
+                it["pixmap"] = fresh
+                changed = True
+        if changed:
+            self.update()
 
     def apply_search(self, text: str):
         q = (text or "").strip().lower()
@@ -350,10 +377,19 @@ class ManualCanvas(QWidget):
 
         cy = rect.y() + rect.height() // 2
 
-        # иконка
-        p.setPen(QPen(QColor(theme.TEXT)))
-        p.setFont(self._f_icon)
-        p.drawText(QRect(ICON_X, rect.y(), ICON_W, rect.height()), Qt.AlignCenter, it["icon"])
+        # иконка: реальный .exe, иначе эмодзи (🎮 у процессов)
+        pm = it.get("pixmap")
+        if isinstance(pm, QPixmap) and not pm.isNull():
+            sz = min(ICON_PIXMAP, ICON_W, max(8, rect.height() - 8))
+            x = rect.x() + ICON_X + (ICON_W - sz) // 2
+            y = rect.y() + (rect.height() - sz) // 2
+            p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+            p.drawPixmap(x, y, sz, sz, pm)
+        else:
+            p.setPen(QPen(QColor(theme.TEXT)))
+            p.setFont(self._f_icon)
+            p.drawText(QRect(ICON_X, rect.y(), ICON_W, rect.height()),
+                       Qt.AlignCenter, it.get("icon") or "")
 
         # чип типа записи
         kind_text, kind_color = KIND_STYLE.get(it["key"], KIND_DEFAULT)

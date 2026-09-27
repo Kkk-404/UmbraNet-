@@ -50,6 +50,14 @@ _BTN_H  = 40
 _BTN_R  = _BTN_H // 2   # 20px — настоящая пиллюля, углов не видно
 
 
+def _qss_label(color: str, size: int) -> str:
+    """Цвет текста без собственной заливки — иначе у статуса виден чужой фон."""
+    return (
+        f"color:{color};font-size:{size}px;"
+        "background:transparent;border:none;"
+    )
+
+
 def _power_qss(bg1: str, bg2: str,
                hover1: str, hover2: str,
                pressed1: str, pressed2: str) -> str:
@@ -351,6 +359,10 @@ class ControlBar(QFrame):
         super().__init__()
         self._running = running
         self._can_start = True  # C1: Старт заблокирован без целей
+        self.setFrameShape(QFrame.NoFrame)
+        self.setAutoFillBackground(False)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setStyleSheet("background:transparent;border:none;")
 
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -363,9 +375,13 @@ class ControlBar(QFrame):
         # между ModeSwitch и ControlBar): статус, «Перезапуск» и «Старт» —
         # единый прижатый к правому краю блок, как в шапке Телеграма.
         self._dot = QLabel("●")
-        self._dot.setStyleSheet(f"color:{theme.MUTED}; font-size:14px;")
+        self._dot.setAutoFillBackground(False)
+        self._dot.setAttribute(Qt.WA_TranslucentBackground, True)
+        self._dot.setStyleSheet(_qss_label(theme.MUTED, 14))
         self._status = QLabel("Остановлен")
-        self._status.setStyleSheet(f"color:{theme.SUBTEXT}; font-size:13px;")
+        self._status.setAutoFillBackground(False)
+        self._status.setAttribute(Qt.WA_TranslucentBackground, True)
+        self._status.setStyleSheet(_qss_label(theme.SUBTEXT, 13))
         lay.addWidget(self._dot)
         lay.addWidget(self._status)
 
@@ -612,17 +628,17 @@ class ControlBar(QFrame):
             if not self._can_start:
                 self.btn_power.setEnabled(False)
                 self.btn_power.setToolTip("Выберите хотя бы один сервис в «Маршрутизация» → включите тумблер или добавьте домен")
-                self._dot.setStyleSheet(f"color:{theme.YELLOW}; font-size:14px;")
+                self._dot.setStyleSheet(_qss_label(theme.YELLOW, 14))
                 self._status.setText("Выберите сервис в «Маршрутизация»")
-                self._status.setStyleSheet(f"color:{theme.YELLOW}; font-size:13px;")
+                self._status.setStyleSheet(_qss_label(theme.YELLOW, 13))
             else:
                 self.btn_power.setEnabled(True)
                 self.btn_power.setToolTip("")
                 # Вернём нейтральный статус если был жёлтый из-за пустого списка
                 if self._status.text() == "Выберите сервис в «Маршрутизация»":
-                    self._dot.setStyleSheet(f"color:{theme.MUTED}; font-size:14px;")
+                    self._dot.setStyleSheet(_qss_label(theme.MUTED, 14))
                     self._status.setText("Остановлен")
-                    self._status.setStyleSheet(f"color:{theme.SUBTEXT}; font-size:13px;")
+                    self._status.setStyleSheet(_qss_label(theme.SUBTEXT, 13))
 
     def _sync_status_tooltip(self):
         """Подсказка точки-индикатора повторяет текст статуса.
@@ -642,7 +658,7 @@ class ControlBar(QFrame):
 
         if running:
             color = theme.YELLOW if admin_warn else theme.GREEN
-            self._dot.setStyleSheet(f"color:{color}; font-size:14px;")
+            self._dot.setStyleSheet(_qss_label(color, 14))
 
             # Определяем текст статуса в зависимости от режима
             if mode == "dns_only":
@@ -657,7 +673,7 @@ class ControlBar(QFrame):
             self._status.setText(
                 "Нужны права администратора" if admin_warn else status_text
             )
-            self._status.setStyleSheet(f"color:{color}; font-size:13px;")
+            self._status.setStyleSheet(_qss_label(color, 13))
             self._power_text = "⏹  Стоп"
             self._render_power()
             self.btn_power.setStyleSheet(_power_qss(
@@ -669,16 +685,16 @@ class ControlBar(QFrame):
             self.btn_power.setEnabled(True)
             self.btn_power.setToolTip("")
         else:
-            self._dot.setStyleSheet(f"color:{theme.MUTED}; font-size:14px;")
+            self._dot.setStyleSheet(_qss_label(theme.MUTED, 14))
             # Если старт запрещён — статус жёлтый, иначе обычный
             can = getattr(self, "_can_start", True)
             if not can:
-                self._dot.setStyleSheet(f"color:{theme.YELLOW}; font-size:14px;")
+                self._dot.setStyleSheet(_qss_label(theme.YELLOW, 14))
                 self._status.setText("Выберите сервис в «Маршрутизация»")
-                self._status.setStyleSheet(f"color:{theme.YELLOW}; font-size:13px;")
+                self._status.setStyleSheet(_qss_label(theme.YELLOW, 13))
             else:
                 self._status.setText("Остановлен")
-                self._status.setStyleSheet(f"color:{theme.SUBTEXT}; font-size:13px;")
+                self._status.setStyleSheet(_qss_label(theme.SUBTEXT, 13))
             self._power_text = "▶  Старт"
             self._render_power()
             self.btn_power.setStyleSheet(_power_qss(
@@ -706,9 +722,9 @@ class ControlBar(QFrame):
             "restart": ("↻  Перезапуск...", theme.ORANGE, "Перезапуск..."),
         }
         btn_text, color, status_text = labels.get(action, ("...", theme.MUTED, "..."))
-        self._dot.setStyleSheet(f"color:{color}; font-size:14px;")
+        self._dot.setStyleSheet(_qss_label(color, 14))
         self._status.setText(status_text)
-        self._status.setStyleSheet(f"color:{color}; font-size:13px;")
+        self._status.setStyleSheet(_qss_label(color, 13))
         self._power_text = btn_text
         self._render_power()
         self.btn_power.setStyleSheet(_idle_qss())
@@ -720,9 +736,9 @@ class ControlBar(QFrame):
         self.btn_power.setGraphicsEffect(None)
         self.btn_power.setEnabled(False)
         self.btn_restart.setEnabled(False)
-        self._dot.setStyleSheet(f"color:{theme.ACCENT3}; font-size:14px;")
+        self._dot.setStyleSheet(_qss_label(theme.ACCENT3, 14))
         self._status.setText("AI-генерация...")
-        self._status.setStyleSheet(f"color:{theme.ACCENT3}; font-size:13px;")
+        self._status.setStyleSheet(_qss_label(theme.ACCENT3, 13))
         self._power_text = "🧪  Генерация..."
         self._render_power()
         self.btn_power.setStyleSheet(_idle_qss())
@@ -731,10 +747,10 @@ class ControlBar(QFrame):
     def set_error(self, message: str):
         """Показывает ошибку запуска."""
         self.btn_power.setGraphicsEffect(None)
-        self._dot.setStyleSheet(f"color:{theme.RED}; font-size:14px;")
+        self._dot.setStyleSheet(_qss_label(theme.RED, 14))
         short = (message[:45] + "…") if len(message) > 45 else message
         self._status.setText(f"Ошибка: {short}")
-        self._status.setStyleSheet(f"color:{theme.RED}; font-size:12px;")
+        self._status.setStyleSheet(_qss_label(theme.RED, 12))
         self.btn_power.setEnabled(True)
         self.btn_restart.setEnabled(False)
         self._sync_status_tooltip()

@@ -15,8 +15,8 @@ from __future__ import annotations
 
 import time
 
-from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtCore import QSize, Qt, QThread, Signal
+from PySide6.QtGui import QGuiApplication, QIcon
 from PySide6.QtWidgets import (
     QDialog,
     QFrame,
@@ -583,12 +583,18 @@ class TestDnsDialog(QDialog):
 #  Выбор процесса
 # ════════════════════════════════════════════════════════════════════════════
 class _ProcLoadWorker(QThread):
-    loaded = Signal(list)
+    loaded = Signal(list)          # имена — сразу, чтобы список не ждал иконки
+    paths_ready = Signal(dict)     # name -> путь к .exe (QPixmap собирает GUI-поток)
 
     def run(self):
         names = sorted({p.get("name") for p in ea.get_running_processes() if p.get("name")},
                        key=str.lower)
         self.loaded.emit(names)
+        if self.isInterruptionRequested():
+            return
+        paths = ea.resolve_process_exes(names, interrupt=self.isInterruptionRequested)
+        if not self.isInterruptionRequested():
+            self.paths_ready.emit(paths)
 
 
 class ProcessPickerDialog(QDialog):
@@ -602,6 +608,7 @@ class ProcessPickerDialog(QDialog):
         _style_dialog(self)
         self.result: str | None = None
         self._all: list[str] = []
+        self._paths: dict = {}
         self._build()
         self._load()
 
@@ -623,6 +630,7 @@ class ProcessPickerDialog(QDialog):
         root.addWidget(self._search)
 
         self._list = _list_widget()
+        self._list.setIconSize(QSize(16, 16))
         self._list.itemDoubleClicked.connect(lambda _i: self._pick())
         root.addWidget(self._list, 1)
 
@@ -643,20 +651,42 @@ class ProcessPickerDialog(QDialog):
     def _load(self):
         self._worker = _ProcLoadWorker()
         self._worker.loaded.connect(self._on_loaded)
+        self._worker.paths_ready.connect(self._on_paths)
         self._worker.start()
 
     def _on_loaded(self, names: list):
         self._all = names
-        self._show(names)
         if names:
             self._hint.setText(f"Найдено процессов: {len(names)}")
         else:
             self._hint.setText("Список пуст (доступно только на Windows / с правами).")
+        self._filter(self._search.text() if hasattr(self, "_search") else "")
+
+    def _on_paths(self, paths: dict):
+        self._paths = dict(paths or {})
+        # Перерисовать видимые строки с настоящими иконками, не сбрасывая фильтр.
+        q = self._search.text() if hasattr(self, "_search") else ""
+        self._filter(q)
+
+    def _item_icon(self, name: str) -> QIcon:
+        from umbranet.process_icons import gamepad_icon, pixmap_for_exe
+        path = self._paths.get(name)
+        pm = pixmap_for_exe(path) if path else None
+        if pm is not None:
+            return QIcon(pm)
+        return gamepad_icon()
 
     def _show(self, items):
+        current = self._list.currentItem().text() if self._list.currentItem() else None
         self._list.clear()
         for it in items:
-            self._list.addItem(QListWidgetItem(it))
+            item = QListWidgetItem(it)
+            item.setIcon(self._item_icon(it))
+            self._list.addItem(item)
+        if current:
+            matches = self._list.findItems(current, Qt.MatchExactly)
+            if matches:
+                self._list.setCurrentItem(matches[0])
 
     def _filter(self, text: str):
         q = text.lower().strip()
@@ -671,8 +701,18 @@ class ProcessPickerDialog(QDialog):
 
     def closeEvent(self, event):
         w = getattr(self, "_worker", None)
-        if w and w.isRunning():
-            w.wait(1500)
+        if w is not None:
+            try:
+                w.loaded.disconnect(self._on_loaded)
+            except (TypeError, RuntimeError):
+                pass
+            try:
+                w.paths_ready.disconnect(self._on_paths)
+            except (TypeError, RuntimeError):
+                pass
+            if w.isRunning():
+                w.requestInterruption()
+                w.wait(1500)
         super().closeEvent(event)
 
 
@@ -930,3 +970,50 @@ class DnsCryptResolverDialog(QDialog):
             return
         self.result = dict(ea.DNSCRYPT_RESOLVERS[self._selected_idx])
         self.accept()
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  Перезапуск после смены темы
+# ════════════════════════════════════════════════════════════════════════════
+class ThemeRestartDialog(QDialog):
+    """Тема применится только после перезапуска — спрашиваем, делать ли это сейчас."""
+
+    def __init__(self, theme_name: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Смена темы")
+        self.setModal(True)
+        self.setFixedWidth(460)
+        _style_dialog(self)
+        self.setStyleSheet(
+            f"QDialog{{background:{theme.BG};color:{theme.TEXT};"
+            f"border:1px solid {theme.BORDER};}}"
+        )
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(22, 20, 22, 18)
+        root.setSpacing(14)
+
+        root.addWidget(_title_label("Перезапустить UmbraNet?"))
+
+        body = QLabel(
+            f"Тема «{theme_name}» сохранится сразу, но в окне она появится "
+            f"только после перезапуска приложения.\n\n"
+            f"Перезагрузить UmbraNet сейчас?"
+        )
+        body.setWordWrap(True)
+        body.setStyleSheet(
+            f"color:{theme.SUBTEXT};font-size:13px;background:transparent;border:none;"
+        )
+        root.addWidget(body)
+
+        btns = QHBoxLayout()
+        btns.setSpacing(10)
+        cancel = _ghost_btn("Отмена")
+        cancel.clicked.connect(self.reject)
+        restart = _accent_btn("Перезагрузить", theme.ACCENT)
+        restart.setDefault(True)
+        restart.clicked.connect(self.accept)
+        btns.addWidget(cancel)
+        btns.addStretch()
+        btns.addWidget(restart)
+        root.addLayout(btns)

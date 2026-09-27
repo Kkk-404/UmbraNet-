@@ -311,3 +311,12 @@ def test_theme_and_adapter_share_state_end_to_end(state_file):
     assert engine_adapter.auto_transport_enabled() is True
     assert engine_adapter.get_nav_order(["map", "home"]) == ["home", "map"]
     assert engine_adapter.get_favorite_services(["youtube"]) == ["youtube"]
+
+
+def test_auto_transport_on_for_new_install(state_file):
+    """Скачали приложение — в «Маршрут DNS» сразу «Авто», без ключа в файле."""
+    assert not state_file.exists()
+    import engine_adapter
+    assert engine_adapter.auto_transport_enabled() is True
+    engine_adapter.set_auto_transport(False)
+    assert engine_adapter.auto_transport_enabled() is False

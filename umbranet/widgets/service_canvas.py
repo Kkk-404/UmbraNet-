@@ -4,7 +4,9 @@ UmbraNet - «телеграмизация» списка сервисов (ва�
 Техника Telegram Desktop: ВЕСЬ список сервисов (избранное + категории +
 строки со звёздами и тумблерами + ползунок прокрутки) рисует ОДИН
 paintEvent одного QWidget. Ни одного дочернего виджета на строку:
-фон hover, звёзды, эмодзи, имена, тумблеры и scrollbar рисуются кистью.
+фон hover, звёзды, эмодзи, имена, чип DNS/DPI, тумблеры и scrollbar рисуются кистью.
+В DNS-only нельзя включить DPI-сервисы (и наоборот); Combo — всё можно.
+На заблокированном тумблере курсор — 🚫 (без белого фона), плюс подсказка сменить режим.
 
 Зачем: раньше каждая строка была QFrame'ом с QPushButton + 2 QLabel +
 Toggle (~150 виджетов в области прокрутки) — при ресайзе окна Qt
@@ -34,7 +36,7 @@ from PySide6.QtCore import (
     QVariantAnimation,
     Signal,
 )
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QLinearGradient, QPainter, QPen
+from PySide6.QtGui import QColor, QCursor, QFont, QFontMetrics, QLinearGradient, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QWidget
 
 from umbranet import theme
@@ -49,6 +51,8 @@ STAR_X, STAR_W = 8, 22          # зона звезды
 EMOJI_X, EMOJI_W = 37, 28       # зона эмодзи строки
 NAME_X = 72                     # начало имени
 TG_RIGHT = 6                    # правый отступ тумблера строки
+CHIP_W, CHIP_H = 34, 16         # чип «DNS» / «DPI»
+NAME_MARK_GAP = 6               # зазор имя ↔ чип (чип сразу после названия)
 SB_PAD, SB_W = 10, 6            # зона и толщина ползунка прокрутки
 
 # кэш QColor по строке темы (тема может быть любой из themes/, поэтому
@@ -84,10 +88,13 @@ class ServiceCanvas(QWidget):
     favoriteToggled = Signal(str)         # сервис (добавить/убрать из избранного)
     categoryToggled = Signal(str, bool)   # категория, новое состояние
 
-    def __init__(self, catalog: list[tuple], parent=None):
+    def __init__(self, catalog: list[tuple], parent=None, bypass_map: dict | None = None):
         super().__init__(parent)
         # catalog: [(cat, emoji, color1, color2, [(svc, svc_emoji), ...]), ...]
         self._catalog = catalog
+        self._bypass_map = dict(bypass_map or {})
+        self._app_mode = "dns_only"             # dns_only / combo / dpi_only
+        self._dev_mode = False                  # настройки: снять блокировку DNS/DPI
         self._favorites: list[str] = []
         self._on: dict[str, bool] = {}          # svc -> включён
         self._tpos: dict[str, float] = {}       # ключ тумблера -> позиция 0..1 (0.5 partial)
@@ -95,6 +102,7 @@ class ServiceCanvas(QWidget):
         self._hover = -1                        # индекс строки под курсором
         self._hover_star = False
         self._offset = 0
+        self._ban_cur: QCursor | None = None    # 🚫 на прозрачном фоне, только над тумблером
 
         # плоская модель + префикс-суммы
         self._rows: list[dict] = []
@@ -111,6 +119,7 @@ class ServiceCanvas(QWidget):
         self._f_emoji = QFont(base); self._f_emoji.setPixelSize(16)
         self._f_name = QFont(base); self._f_name.setPixelSize(13)
         self._fm_name = QFontMetrics(self._f_name)
+        self._f_chip = QFont(base); self._f_chip.setPixelSize(9); self._f_chip.setBold(True)
         self._grad_cache: dict[tuple, QLinearGradient] = {}
 
         # ползунок прокрутки (рисуем сами, плавное затухание)
@@ -155,6 +164,86 @@ class ServiceCanvas(QWidget):
             return
         self._search = q
         self._rebuild()
+
+    def set_bypass_map(self, bypass_map: dict):
+        self._bypass_map = dict(bypass_map or {})
+        self.update()
+
+    def set_app_mode(self, mode: str):
+        """Текущий режим окна: dns_only / combo / dpi_only — для подсказки и акцента чипа."""
+        mode = str(mode or "dns_only")
+        if mode not in ("dns_only", "combo", "dpi_only"):
+            mode = "dns_only"
+        if mode == self._app_mode:
+            return
+        self._app_mode = mode
+        self.update()
+
+    def set_developer_mode(self, on: bool) -> None:
+        on = bool(on)
+        if on == self._dev_mode:
+            return
+        self._dev_mode = on
+        self.update()
+
+    def _bypass_of(self, svc: str) -> str:
+        v = str(self._bypass_map.get(svc) or "dns").strip().lower()
+        return v if v in ("dns", "dpi") else "dns"
+
+    def _locked(self, svc: str) -> bool:
+        """Сервис нельзя ВКЛЮЧИТЬ в текущем режиме (выключить — можно)."""
+        if self._dev_mode or self._app_mode == "combo":
+            return False
+        b = self._bypass_of(svc)
+        if self._app_mode == "dpi_only":
+            return b != "dpi"
+        return b != "dns"
+
+    def _elided_name(self, svc: str, content_w: int) -> str:
+        """Имя с обрезкой: справа оставляем место под чип и тумблер."""
+        toggle_x = content_w - TOGGLE_W - TG_RIGHT
+        cluster = NAME_MARK_GAP + CHIP_W
+        avail = max(0, toggle_x - NAME_X - cluster - 8)
+        name = svc
+        if avail > 0 and self._fm_name.horizontalAdvance(name) > avail:
+            name = self._fm_name.elidedText(name, Qt.ElideRight, avail)
+        return name
+
+    def _chip_x(self, svc: str, content_w: int) -> int:
+        """x чипа — сразу после названия, не у тумблера."""
+        name_w = self._fm_name.horizontalAdvance(self._elided_name(svc, content_w))
+        return NAME_X + name_w + NAME_MARK_GAP
+
+    def _locked_tip(self, svc: str | None = None) -> str:
+        """Почему тумблер серый — человеку нужно сменить режим."""
+        need = "DPI" if self._app_mode == "dns_only" else "DNS"
+        other = "DPI или Combo" if self._app_mode == "dns_only" else "DNS или Combo"
+        if svc:
+            return (
+                f"{svc} работает через {need}. "
+                f"Переключитесь на {other}, чтобы включить."
+            )
+        return f"В этом режиме эти сервисы не включить. Переключитесь на {other}."
+
+    def _ban_cursor(self) -> QCursor:
+        """Настоящий 🚫 на прозрачном фоне — без белого квадрата."""
+        if self._ban_cur is None:
+            s = 24
+            pm = QPixmap(s, s)
+            pm.fill(Qt.transparent)
+            p = QPainter(pm)
+            p.setRenderHint(QPainter.Antialiasing, True)
+            p.setRenderHint(QPainter.TextAntialiasing, True)
+            font = QFont(self.font())
+            # Windows: Segoe UI Emoji даёт цветной 🚫 без подложки
+            font.setFamily("Segoe UI Emoji")
+            font.setPixelSize(18)
+            p.setFont(font)
+            p.setPen(QPen(qc(theme.RED)))
+            p.drawText(QRect(0, 0, s, s), Qt.AlignCenter, "🚫")
+            p.end()
+            self._ban_cur = QCursor(pm, s // 2, s // 2)
+        return self._ban_cur
 
     # ══════════════════ модель ════════════════════════════════════════════
 
@@ -338,16 +427,21 @@ class ServiceCanvas(QWidget):
     # ── мышь ──
 
     def _row_zone(self, i: int, x: float) -> str:
-        """star / toggle / body для строки; для заголовка — toggle/body."""
+        """star / chip / help / toggle / body для строки; для заголовка — toggle/body."""
         r = self._rows[i]
         if r["kind"] == "row":
             if x < STAR_X + STAR_W + 6:
                 return "star"
-            if self._content_w() - x < TOGGLE_W + TG_RIGHT + 8:
+            w = self._content_w()
+            toggle_x = w - TOGGLE_W - TG_RIGHT
+            if x >= toggle_x:
                 return "toggle"
+            chip_x = self._chip_x(r["svc"], w)
+            if chip_x <= x < chip_x + CHIP_W + 3:
+                return "chip"
             return "body"
         # заголовок: тумблер справа
-        if self._content_w() - x < TOGGLE_W + 10 + 8:
+        if self._content_w() - x < TOGGLE_W + 10:
             return "toggle"
         return "body"
 
@@ -376,6 +470,8 @@ class ServiceCanvas(QWidget):
                 self.favoriteToggled.emit(r["svc"])
             elif zone == "toggle":
                 new = not self._on.get(r["svc"], False)
+                if new and self._locked(r["svc"]):
+                    return
                 self._on[r["svc"]] = new
                 self._animate_toggle(r["svc"], 1.0 if new else 0.0)
                 self.serviceToggled.emit(r["svc"], new)
@@ -383,6 +479,8 @@ class ServiceCanvas(QWidget):
             if zone == "toggle" and r.get("cat"):
                 pos_cat = self._cat_pos(r["cat"])
                 new = pos_cat != 1.0     # partial/off -> включить всё; on -> выключить
+                if new and not any(not self._locked(s) for s in self._cat_svcs(r["cat"])):
+                    return
                 self.categoryToggled.emit(r["cat"], new)
 
     def mouseMoveEvent(self, event):
@@ -397,7 +495,8 @@ class ServiceCanvas(QWidget):
             self.update()
             return
         i = self._index_at(pos.y())
-        star = i >= 0 and self._rows[i]["kind"] == "row" and self._row_zone(i, pos.x()) == "star"
+        zone = self._row_zone(i, pos.x()) if i >= 0 else ""
+        star = zone == "star"
         if i != self._hover or star != self._hover_star:
             old = self._hover
             self._hover = i
@@ -406,18 +505,34 @@ class ServiceCanvas(QWidget):
                 self.update(self._row_rect(old))
             if i >= 0:
                 self.update(self._row_rect(i))
-        # курсор-рука над звездой/тумблером/ползунком
-        hand = star or (
-            i >= 0 and self._row_zone(i, pos.x()) == "toggle"
-        ) or (
-            self._sb_op > 0.05 and pos.x() >= self.width() - SB_PAD - 2
-        )
-        self.setCursor(Qt.PointingHandCursor if hand else Qt.ArrowCursor)
+        # 🚫 и подсказка — только над самим тумблером, не над всей строкой
+        locked_toggle = False
+        locked_tip = ""
+        if i >= 0 and zone == "toggle":
+            r = self._rows[i]
+            if r["kind"] == "row" and self._locked(r["svc"]) and not self._on.get(r["svc"]):
+                locked_toggle = True
+                locked_tip = self._locked_tip(r["svc"])
+            elif (r["kind"] == "header" and r.get("cat")
+                  and self._cat_pos(r["cat"]) != 1.0
+                  and not any(not self._locked(s) for s in self._cat_svcs(r["cat"]))):
+                locked_toggle = True
+                locked_tip = self._locked_tip()
         if star:
+            self.setCursor(Qt.PointingHandCursor)
             r = self._rows[i]
             self.setToolTip("Убрать из избранного" if r["svc"] in self._favorites
                             else "Добавить в избранное")
+        elif locked_toggle:
+            self.setCursor(self._ban_cursor())
+            self.setToolTip(locked_tip)
         else:
+            hand = (
+                i >= 0 and zone == "toggle"
+            ) or (
+                self._sb_op > 0.05 and pos.x() >= self.width() - SB_PAD - 2
+            )
+            self.setCursor(Qt.PointingHandCursor if hand else Qt.ArrowCursor)
             self.setToolTip("")
 
     def mouseReleaseEvent(self, event):
@@ -431,6 +546,7 @@ class ServiceCanvas(QWidget):
         self._hover = -1
         self._hover_star = False
         self.setCursor(Qt.ArrowCursor)
+        self.setToolTip("")
 
     # ── анимация тумблеров ──
 
@@ -547,24 +663,42 @@ class ServiceCanvas(QWidget):
         p.drawText(QRect(EMOJI_X, rect.y(), EMOJI_W, ROW_H), Qt.AlignCenter,
                    r.get("emoji") or self._svc_emoji(svc))
 
-        # имя (с обрезкой)
+        # имя + сразу за ним чип DNS/DPI (не столбиком у тумблера)
+        name = self._elided_name(svc, rect.width())
+        name_w = self._fm_name.horizontalAdvance(name)
         p.setFont(self._f_name)
-        avail = rect.width() - NAME_X - TOGGLE_W - TG_RIGHT - 12
-        name = svc
-        if self._fm_name.horizontalAdvance(name) > avail:
-            name = self._fm_name.elidedText(name, Qt.ElideRight, avail)
-        p.drawText(QRect(NAME_X, rect.y(), avail, ROW_H),
+        p.setPen(QPen(qc(theme.TEXT)))
+        p.drawText(QRect(NAME_X, rect.y(), max(1, name_w), ROW_H),
                    Qt.AlignVCenter | Qt.AlignLeft, name)
+        self._paint_bypass_chip(p, svc, self._chip_x(svc, rect.width()), rect.y())
 
-        # тумблер
-        pos = self._tpos.get(svc, 1.0 if self._on.get(svc) else 0.0)
+        # тумблер (у заблокированных «выкл» рисуем серым)
+        on = bool(self._on.get(svc))
+        pos = self._tpos.get(svc, 1.0 if on else 0.0)
         x = rect.width() - TOGGLE_W - TG_RIGHT
-        self._paint_toggle(p, x, rect.y() + (ROW_H - TOGGLE_H) // 2, pos)
+        self._paint_toggle(p, x, rect.y() + (ROW_H - TOGGLE_H) // 2, pos,
+                           disabled=self._locked(svc) and not on)
 
-    def _paint_toggle(self, p: QPainter, x: int, y: int, pos: float):
+    def _paint_bypass_chip(self, p: QPainter, svc: str, x: int, row_y: int):
+        bypass = self._bypass_of(svc)
+        label = "DPI" if bypass == "dpi" else "DNS"
+        # Цвета фиксированные: не зависят от текущего режима окна.
+        color = qc(theme.ORANGE) if bypass == "dpi" else qc(theme.ACCENT2)
+        y = row_y + (ROW_H - CHIP_H) // 2
+        p.setBrush(QColor(color.red(), color.green(), color.blue(), 28))
+        p.setPen(QPen(color, 1))
+        p.drawRoundedRect(QRect(x, y, CHIP_W, CHIP_H), 6, 6)
+        p.setFont(self._f_chip)
+        p.setPen(QPen(color))
+        p.drawText(QRect(x, y, CHIP_W, CHIP_H), Qt.AlignCenter, label)
+
+    def _paint_toggle(self, p: QPainter, x: int, y: int, pos: float,
+                      disabled: bool = False):
         """Пилюля как umbranet.widgets.Toggle: #4b4d75 -> GREEN, partial ORANGE."""
-        partial = abs(pos - 0.5) < 0.01
-        if partial:
+        if disabled:
+            pos = 0.0
+            track = QColor("#3a3b55")
+        elif abs(pos - 0.5) < 0.01:
             track = qc(theme.ORANGE)
         else:
             off = QColor("#4b4d75")

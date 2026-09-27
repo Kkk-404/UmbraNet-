@@ -13,6 +13,7 @@ UmbraNet - сворачиваемое боковое меню (PySide6 / Qt Widg
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 
 from PySide6.QtCore import (
@@ -46,6 +47,17 @@ class NavItem:
     key: str
     label: str
     emoji: str
+
+
+class _LogoLabel(QLabel):
+    """Логотип сайдбара: клики ловим сами (QLabel сигнала clicked не имеет)."""
+
+    clicked = Signal()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
 
 
 class NavButton(QFrame):
@@ -289,6 +301,7 @@ class Sidebar(QFrame):
     navigate = Signal(str)  # key выбранного раздела
     orderChanged = Signal(list)  # новый порядок key после drag&drop
     layoutWidthChanged = Signal()  # изменилась ширина панели (в т.ч. кадр анимации)
+    secretUnlocked = Signal()  # 10 кликов по «U» за 8 с при свёрнутой панели
 
     def __init__(self, items: list[NavItem], active_key: str | None = None,
                  expanded: bool = False):
@@ -305,6 +318,8 @@ class Sidebar(QFrame):
         self._buttons: dict[str, NavButton] = {}
         self._expanded = bool(expanded)
         self._drop_target_index: int | None = None
+        self._secret_clicks: list[float] = []
+        self._secret_unlocked = False
         self.setAcceptDrops(True)
         self.active_key = active_key or (items[0].key if items else "")
 
@@ -337,7 +352,7 @@ class Sidebar(QFrame):
         self._reorder_anim_group = None
 
         # ── логотип ──
-        self._logo = QLabel()
+        self._logo = _LogoLabel()
         self._logo.setTextFormat(Qt.RichText)
         self._logo.setFixedHeight(40)
         self._logo.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
@@ -345,6 +360,7 @@ class Sidebar(QFrame):
         # при смене размера шрифта (раньше использовался &nbsp;, чья ширина
         # зависит от размера шрифта → возникал рывок).
         self._logo.setStyleSheet("background:transparent;border:none;padding-left:6px;")
+        self._logo.clicked.connect(self._on_logo_clicked)
         root.addWidget(self._logo)
         root.addSpacing(14)
 
@@ -545,6 +561,31 @@ class Sidebar(QFrame):
         if key in self._buttons:
             self.active_key = key
             self._refresh_active()
+
+    def add_item(self, item: NavItem) -> bool:
+        """Добавляет пункт меню в конец списка (без пересоздания остальных)."""
+        if item.key in self._buttons:
+            return False
+        btn = NavButton(item)
+        btn.clicked.connect(lambda k=item.key: self._on_click(k))
+        btn.set_expanded(self._expanded)
+        self._buttons[item.key] = btn
+        self._items.append(item)
+        self._order.append(item.key)
+        self._apply_nav_order()
+        return True
+
+    def _on_logo_clicked(self):
+        """Пасхалка: 10 кликов по «U» за 8 секунд — только при свёрнутой панели."""
+        if self._expanded or self._secret_unlocked:
+            return
+        now = time.monotonic()
+        self._secret_clicks = [t for t in self._secret_clicks if now - t <= 8.0]
+        self._secret_clicks.append(now)
+        if len(self._secret_clicks) >= 10:
+            self._secret_unlocked = True
+            self._secret_clicks.clear()
+            self.secretUnlocked.emit()
 
     def paintEvent(self, event):
         """Фон сайдбара + кэшированное свечение под активной вкладкой.

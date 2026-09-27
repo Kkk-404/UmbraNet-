@@ -156,7 +156,7 @@ def test_toggle_labels_grow_in_narrow_window(window, views):
     view = views["settings"]
     window._show("settings")                               # noqa: SLF001
     set_width(window, 1280)
-    label = view._toggle_labels["route_all"]               # noqa: SLF001
+    label = view._toggle_labels["developer_mode"]          # noqa: SLF001
     wide = label.height()
 
     set_width(window, 560)

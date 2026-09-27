@@ -3,7 +3,7 @@ UmbraNet - раздел «Настройки» (PySide6).
 
 Перенос окна настроек из старой версии (3 секции), с автосохранением:
   • DNS-сервер: порт, fallback IPv4/IPv6;
-  • Поведение: route_all, IPv6-сервер, автозапуск, стратегия upstream;
+  • Поведение: режим разработчика, IPv6-сервер, автозапуск, стратегия upstream;
   • Routed-кэш: пресет режима + кэш/TTL (слайдеры) + optimistic cache.
 
 Всё сохраняется СРАЗУ при изменении (как в DNS-профилях). Пресет режима
@@ -36,14 +36,16 @@ from umbranet.engine_adapter import (
     backup_create,
     backup_list,
     backup_load,
-    get_active_dns_profile,
+    get_developer_mode,
     get_engine,
     get_routed_preset_map,
     parse_domain_lines,
     save_config,
+    set_developer_mode,
     set_filter_lists,
     upstream_modes,
 )
+from umbranet.widgets.dialogs import ThemeRestartDialog
 from umbranet.widgets.flow_layout import FlowLayout
 from umbranet.widgets.rounded_panel import RoundedPanel
 from umbranet.widgets.slider_field import SliderField
@@ -257,9 +259,14 @@ class SettingsView(QWidget):
 
         # ── Секция 2: Поведение ──
         s2, l2 = _section("⚡  Поведение")
-        prof_name = get_active_dns_profile(cfg).get("name", "профиль")
-        self._route_all = self._toggle_row(l2, f"Маршрутизировать ВСЕ домены через профиль ({prof_name})",
-                                           cfg.get("route_all", False), key="route_all")
+        self._dev_mode = self._toggle_row(
+            l2,
+            "Режим разработчика — снять блокировку DNS/DPI у сервисов в главном меню",
+            get_developer_mode(),
+            key="developer_mode",
+            autosave=False,
+        )
+        self._dev_mode.toggled.connect(self._on_developer_mode)
         self._ipv6 = self._toggle_row(l2, "Включить IPv6 DNS-сервер", cfg.get("enable_ipv6", True),
                                       key="ipv6")
         self._ipv6_priority = self._toggle_row(l2, "Приоритет IPv6 для заблокированных сайтов (трюк обхода)",
@@ -446,12 +453,13 @@ class SettingsView(QWidget):
         lay.addWidget(edit)
         return {"wrap": wrap, "edit": edit}
 
-    def _toggle_row(self, parent_lay, label, checked, key: str = "") -> Toggle:
+    def _toggle_row(self, parent_lay, label, checked, key: str = "",
+                    autosave: bool = True) -> Toggle:
         """Строка «подпись + переключатель».
 
         Высота подписи — МИНИМУМ, а не предел. Раньше здесь стояла жёсткая высота
         22 px («чтобы не считать heightForWidth на каждый пиксель ресайза»), и в
-        узком окне длинные подписи («Маршрутизировать ВСЕ домены через профиль …»,
+        узком окне длинные подписи («Режим разработчика — снять блокировку …»,
         «Optimistic cache …») переносились на вторую строку и обрезались: строка
         текста просто исчезала. Теперь подпись растёт, карточка растёт следом.
         """
@@ -462,7 +470,8 @@ class SettingsView(QWidget):
         lbl.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
         lbl.setStyleSheet(f"color:{theme.TEXT};font-size:13px;background:transparent;border:none;")
         tg = Toggle(checked)
-        tg.toggled.connect(lambda _=False: self._autosave())
+        if autosave:
+            tg.toggled.connect(lambda _=False: self._autosave())
         row.addWidget(lbl, 1)
         row.addWidget(tg)
         parent_lay.addLayout(row)
@@ -499,8 +508,36 @@ class SettingsView(QWidget):
         if self._suppress or not hasattr(self, "_theme_combo"):
             return
         name = self._theme_combo.currentData()
+        if not name or name == theme.CURRENT_THEME:
+            return
+
+        dlg = ThemeRestartDialog(theme.theme_label(name), self)
+        # exec() в PySide6 возвращает DialogCode; сравнение с dlg.Accepted
+        # на части сборок ложно срабатывает как «отмена» — диалог закрывается,
+        # перезапуск даже не начинается.
+        if not dlg.exec():
+            self._suppress = True
+            i = self._theme_combo.findData(theme.CURRENT_THEME)
+            if i >= 0:
+                self._theme_combo.setCurrentIndex(i)
+            self._suppress = False
+            return
+
         saved = theme.save_theme_preference(name)
-        self._set_status(f"✓ Тема «{theme.theme_label(saved)}» сохранена. Перезапустите UmbraNet", theme.ACCENT3)
+        win = self
+        while win is not None and not callable(getattr(win, "restart_application", None)):
+            win = win.parentWidget()
+        if win is None:
+            win = self.window()
+        restart = getattr(win, "restart_application", None)
+        if callable(restart):
+            # Не из этого слота: сначала закрыть диалог и выйти из exec().
+            QTimer.singleShot(0, restart)
+            return
+        self._set_status(
+            f"✓ Тема «{theme.theme_label(saved)}» сохранена. Перезапустите UmbraNet",
+            theme.ACCENT3,
+        )
 
     def _on_preset_chosen(self, index: int):
         name = self._preset.itemText(index)
@@ -544,6 +581,13 @@ class SettingsView(QWidget):
             self._preset.setPlaceholderText("Пользовательский")
         self._preset.blockSignals(False)
 
+    def _on_developer_mode(self, _on: bool = False):
+        if self._suppress:
+            return
+        set_developer_mode(self._dev_mode.isChecked())
+        self._set_status("✓ Сохранено", theme.GREEN)
+        QTimer.singleShot(1500, lambda: self._set_status("", theme.GREEN))
+
     def _autosave(self):
         if self._suppress:
             return
@@ -555,7 +599,6 @@ class SettingsView(QWidget):
             return
         cfg["fallback_dns"] = self._fb4.text().strip()
         cfg["fallback_dns6"] = self._fb6.text().strip()
-        cfg["route_all"] = self._route_all.isChecked()
         cfg["enable_ipv6"] = self._ipv6.isChecked()
         cfg["ipv6_priority_enabled"] = self._ipv6_priority.isChecked()
         cfg["upstream_mode"] = self._upstream.currentData()
@@ -604,7 +647,6 @@ class SettingsView(QWidget):
         self._port.setText(str(cfg.get("listen_port", 53)))
         self._fb4.setText(cfg.get("fallback_dns", "8.8.8.8"))
         self._fb6.setText(cfg.get("fallback_dns6", ""))
-        self._route_all.setChecked(bool(cfg.get("route_all", False)))
         self._ipv6.setChecked(bool(cfg.get("enable_ipv6", True)))
         i = self._upstream.findData(cfg.get("upstream_mode", "parallel"))
         if i >= 0:
@@ -631,7 +673,6 @@ class SettingsView(QWidget):
         self._port.setText("53")
         self._fb4.setText("8.8.8.8")
         self._fb6.setText("2001:4860:4860::8888")
-        self._route_all.setChecked(False)
         self._ipv6.setChecked(True)
         i = self._upstream.findData("parallel")
         if i >= 0:

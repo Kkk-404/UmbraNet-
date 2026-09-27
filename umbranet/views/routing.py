@@ -32,6 +32,7 @@ from umbranet import theme
 from umbranet.engine_adapter import (
     get_active_dns_profile,
     get_current_mode,
+    get_developer_mode,
     get_engine,
     get_favorite_services,
     is_domain_routed,
@@ -42,9 +43,12 @@ from umbranet.engine_adapter import (
 )
 from umbranet.services_catalog import (
     CATEGORIES,
+    SERVICE_BYPASS,
     SERVICES,
+    service_allowed_in_mode,
     services_in_category,
 )
+from umbranet.process_icons import pixmap_for_process
 from umbranet.widgets.dialogs import ProcessPickerDialog
 from umbranet.widgets.glow_wrap import GlowWrap
 from umbranet.widgets.manual_canvas import ManualCanvas
@@ -437,7 +441,9 @@ class RoutingView(QWidget):
         for cat, (emoji, c1, c2) in CATEGORIES.items():
             catalog.append((cat, emoji, c1, c2,
                             [(svc, SERVICES[svc][1]) for svc in services_in_category(cat)]))
-        self._canvas = ServiceCanvas(catalog)
+        self._canvas = ServiceCanvas(catalog, bypass_map=SERVICE_BYPASS)
+        self._canvas.set_app_mode(get_current_mode())
+        self._canvas.set_developer_mode(get_developer_mode())
         self._canvas.set_favorites(self._favorite_services)
         self._canvas.serviceToggled.connect(self._toggle_service)
         self._canvas.favoriteToggled.connect(self._toggle_favorite)
@@ -464,9 +470,16 @@ class RoutingView(QWidget):
         self._canvas.apply_search(text)
 
     def _toggle_category(self, cat: str, on: bool):
-        """Включить/выключить все сервисы категории разом."""
+        """Включить/выключить все сервисы категории разом.
+
+        В DNS-only DPI-сервисы не включаются (и наоборот). Выключить можно все.
+        """
         routed = self.engine.config.setdefault("routed_domains", [])
+        mode = get_current_mode()
+        unlock = get_developer_mode()
         for svc in services_in_category(cat):
+            if on and not unlock and not service_allowed_in_mode(svc, mode):
+                continue
             _, _, domains = SERVICES[svc]
             if on:
                 for d in domains:
@@ -1157,6 +1170,8 @@ class RoutingView(QWidget):
         self.refresh()
 
     def _toggle_service(self, svc: str, on: bool):
+        if on and not get_developer_mode() and not service_allowed_in_mode(svc, get_current_mode()):
+            return
         _, _, domains = SERVICES[svc]
         routed = self.engine.config.setdefault("routed_domains", [])
         if on:
@@ -1285,6 +1300,8 @@ class RoutingView(QWidget):
 
         # Переключение видимости в зависимости от текущего режима
         mode = get_current_mode()
+        self._canvas.set_app_mode(mode)
+        self._canvas.set_developer_mode(get_developer_mode())
         self._dpi_strategy_list.refresh()
 
         if mode == "dns_only":
@@ -1387,7 +1404,10 @@ class RoutingView(QWidget):
             tuple(sorted(cfg.get("routed_subscriptions", []) or [])),
         )
         if getattr(self, "_manual_list_key", None) == current_key:
-            return  # содержимое не изменилось
+            # имена те же, но иконка процесса могла появиться позже
+            if hasattr(self, "_manual_canvas"):
+                self._manual_canvas.try_fill_process_icons()
+            return
         self._manual_list_key = current_key
 
         # Собираем записи: {name, key, icon, badge, badge_color, display}
@@ -1411,13 +1431,20 @@ class RoutingView(QWidget):
                           "badge": svc or "", "badge_color": theme.ACCENT2 if svc else "",
                           "display": d})
 
-        # 3) Процессы
+        # 3) Процессы — настоящая иконка .exe, если путь нашёлся, иначе 🎮
         for pr in cfg.get("routed_processes", []) or []:
-            items.append({"name": pr, "key": "routed_processes", "icon": "🎮",
-                          "badge": "", "badge_color": "", "display": pr,
-                          # защищённые (chrome/msedge/firefox) не удаляются —
-                          # канвас не рисует у них ✕ и не реагирует на клик
-                          "protected": is_protected_process(pr)})
+            item = {"name": pr, "key": "routed_processes", "icon": "🎮",
+                    "badge": "", "badge_color": "", "display": pr,
+                    # защищённые (chrome/msedge/firefox) не удаляются —
+                    # канвас не рисует у них ✕ и не реагирует на клик
+                    "protected": is_protected_process(pr)}
+            try:
+                pm = pixmap_for_process(pr)
+            except Exception:
+                pm = None
+            if pm is not None:
+                item["pixmap"] = pm
+            items.append(item)
 
         # Сортировка: подписки (0), домены (1), процессы (2), затем по имени
         prio_map = {"routed_subscriptions": 0, "routed_domains": 1, "routed_processes": 2}

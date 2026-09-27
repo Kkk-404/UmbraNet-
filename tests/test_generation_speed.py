@@ -100,8 +100,27 @@ def test_discord_checks_run_in_parallel_and_keep_order(monkeypatch):
     assert elapsed < 2.0, f"проверки Discord шли последовательно: {elapsed:.2f}с"
     assert result["checks"][1]["host"] == "discord.com", "voice/regions не на своём месте"
     assert result["checks"][5]["host"] == "gateway.discord.gg", "gateway WS не на своём месте"
-    assert result["required"] == {"gateway_ws": True, "voice_regions": True}
+    assert result["required"] == {
+        "gateway_ws": True, "voice_regions": True, "cdn_avatar": True,
+    }
     assert result["ok"] is True
+
+
+def test_discord_fails_without_cdn_avatar(monkeypatch):
+    """Стратегия без живых аватарок Discord не должна считаться успешной."""
+
+    def https(host, *args, **kwargs):
+        return fake_check(host, ok=(host != "cdn.discordapp.com"))
+
+    def ws(host, *args, **kwargs):
+        return fake_check(host, ok=True)
+
+    monkeypatch.setattr(probes, "https_probe", https)
+    monkeypatch.setattr(probes, "websocket_hello_probe", ws)
+    result = probes.probe_discord_basic(timeout=1.0)
+    assert result["required"]["cdn_avatar"] is False
+    assert result["required"]["gateway_ws"] is True
+    assert result["ok"] is False
 
 
 def test_services_run_in_parallel(monkeypatch):

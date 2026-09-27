@@ -42,6 +42,7 @@ from umbranet.engine_adapter import (
     switch_mode,
 )
 from umbranet.views.about import AboutView
+from umbranet.views.kus import KusView
 from umbranet.views.log import LogView
 from umbranet.views.network import NetworkView
 from umbranet.views.profiles import ProfilesView
@@ -63,6 +64,7 @@ NAV_ITEMS = [
     NavItem("settings", "Настройки",          "⚙"),
     NavItem("about",    "О программе",        "ℹ"),
 ]
+SECRET_NAV = NavItem("kus", "Кусь", "😺")
 
 
 def _ordered_nav_items() -> list[NavItem]:
@@ -471,6 +473,7 @@ class MainWindow(GlowContainer):
         self.sidebar.orderChanged.connect(
             lambda order: set_nav_order(order, [it.key for it in NAV_ITEMS])
         )
+        self.sidebar.secretUnlocked.connect(self._unlock_kus)
         root.addWidget(self.sidebar)
 
         right = QVBoxLayout()
@@ -870,10 +873,13 @@ class MainWindow(GlowContainer):
     def _begin_strategy_check_session(self):
         view = self._views.get("strategy_lab")
         try:
-            if self._strategy_check_worker and self._strategy_check_worker.isRunning():
-                if hasattr(view, "_generation_busy"):
-                    view._generation_busy()
-                return
+            if self._strategy_check_worker is not None:
+                if self._strategy_check_worker.isRunning():
+                    if hasattr(view, "_generation_busy"):
+                        view._generation_busy()
+                    return
+                # Worker завершился, но ссылка осталась — чистим.
+                self._strategy_check_worker = None
             self._busy = True
             if hasattr(self.control, "set_ai_busy"):
                 self.control.set_ai_busy()
@@ -898,7 +904,7 @@ class MainWindow(GlowContainer):
 
     def _on_strategy_check_cancel_requested(self):
         try:
-            w = getattr(self, "_strategy_check_worker", None)
+            w = self._strategy_check_worker
             if w is not None and w.isRunning():
                 if hasattr(w, "request_cancel"):
                     w.request_cancel()
@@ -908,6 +914,7 @@ class MainWindow(GlowContainer):
                 return
         except Exception as exc:  # noqa: BLE001
             log.warning("Strategy check cancel failed: %s", exc)
+        self._strategy_check_worker = None
         try:
             dpi_strategy_ai_cleanup_runtime()
         except Exception:
@@ -925,6 +932,8 @@ class MainWindow(GlowContainer):
             result["cleanup"] = cleanup
         except Exception as exc:
             result["cleanup"] = {"stopped": [], "errors": [str(exc)]}
+        # Сбрасываем ссылку на worker (см. комментарий в _on_ai_generation_done).
+        self._strategy_check_worker = None
         self._busy = False
         self._strategy_check_pending = False
         self.control.set_running(False, mode=get_current_mode())
@@ -962,10 +971,13 @@ class MainWindow(GlowContainer):
             plan = dpi_strategy_ai_plan("quick")
             if hasattr(view, "_generation_plan_ready"):
                 view._generation_plan_ready(plan)
-            if self._ai_generation_worker and self._ai_generation_worker.isRunning():
-                if hasattr(view, "_generation_busy"):
-                    view._generation_busy()
-                return
+            if self._ai_generation_worker is not None:
+                if self._ai_generation_worker.isRunning():
+                    if hasattr(view, "_generation_busy"):
+                        view._generation_busy()
+                    return
+                # Worker завершился, но ссылка осталась — чистим.
+                self._ai_generation_worker = None
             self._busy = True
             if hasattr(self.control, "set_ai_busy"):
                 self.control.set_ai_busy()
@@ -989,7 +1001,7 @@ class MainWindow(GlowContainer):
     def _on_ai_generation_cancel_requested(self):
         """Отмена AI-генерации из UI: не закрываем программу, только DPI-session."""
         try:
-            w = getattr(self, "_ai_generation_worker", None)
+            w = self._ai_generation_worker
             if w is not None and w.isRunning():
                 if hasattr(w, "request_cancel"):
                     w.request_cancel()
@@ -1000,6 +1012,7 @@ class MainWindow(GlowContainer):
         except Exception as exc:  # noqa: BLE001
             log.warning("AI generation cancel failed: %s", exc)
         # Если worker уже завершился между кликом и обработкой — всё равно чистим DPI.
+        self._ai_generation_worker = None
         try:
             dpi_strategy_ai_cleanup_runtime()
         except Exception:
@@ -1026,6 +1039,11 @@ class MainWindow(GlowContainer):
         except Exception as exc:  # noqa: BLE001
             result["cleanup"] = {"stopped": [], "errors": [str(exc)]}
             log.warning("AI generation cleanup failed: %s", exc)
+        # Сбрасываем ссылку на worker: без этого isRunning() может кратковременно
+        # вернуть True (QThread ещё не обработал finished-сигнал), и повторный
+        # запуск генерации попадёт в guard «worker уже запущен» → _busy навсегда
+        # останется True → «вечная уборка».
+        self._ai_generation_worker = None
         self._busy = False
         self._ai_generation_pending = False
         self._strategy_check_pending = False
@@ -1486,6 +1504,20 @@ class MainWindow(GlowContainer):
     def _on_navigate(self, key: str):
         self._show(key)
 
+    def _unlock_kus(self):
+        """Показывает скрытую вкладку «Кусь» (сессия, без сохранения в порядок)."""
+        if SECRET_NAV.key in self._pages:
+            self.sidebar.set_active(SECRET_NAV.key)
+            self._show(SECRET_NAV.key)
+            return
+        page = KusView()
+        self._views[SECRET_NAV.key] = page
+        idx = self.stack.addWidget(self._scrollable_page(page, key=SECRET_NAV.key))
+        self._pages[SECRET_NAV.key] = idx
+        self.sidebar.add_item(SECRET_NAV)
+        self.sidebar.set_active(SECRET_NAV.key)
+        self._show(SECRET_NAV.key)
+
     # ── Размер и положение окна ─────────────────────────────────────────────
     # Настройка живёт в общем состоянии UI (core/ui_state.py): тот же файл, что
     # тема и порядок вкладок, с блокировкой и атомарной записью.
@@ -1818,6 +1850,30 @@ class MainWindow(GlowContainer):
             log.debug("handoff DNS watchdog'у не удался: %s", exc)
             return False
 
+    def restart_application(self):
+        """Полный перезапуск процесса (нужен, чтобы подтянуть новую тему)."""
+        if not schedule_relaunch():
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(
+                self,
+                "Не удалось перезапустить",
+                "Тема сохранена. Закройте UmbraNet и откройте его снова.",
+            )
+            return
+        self._really_quit = True
+        try:
+            self._hard_stop_runtime(reset_dns=True)
+        except Exception as exc:
+            log.warning("Остановка runtime перед перезапуском: %s", exc)
+        if self.tray:
+            try:
+                self.tray.hide()
+            except Exception:
+                pass
+        QApplication.quit()
+        # Если цикл событий не вышел (трей / вложенный exec) — добиваем процесс.
+        QTimer.singleShot(800, lambda: __import__("os")._exit(0))
+
     def _quit_app(self):
         self._really_quit = True
         # При настоящем выходе всегда чистим runtime и DNS. Это важно для
@@ -1878,7 +1934,7 @@ class MainWindow(GlowContainer):
     # Телеграмизация 2026-09: все вкладки кроме карты теперь paintEvent-чистые
     # (RoundedPanel/Canvas) и не фризят при живом resize — freeze-снимок
     # больше не нужен. Карта исключена по просьбе юзера (сырой виджет).
-    LIVE_RESIZE_PAGES = {"routing", "network", "strategy_lab", "profiles", "log", "settings", "about"}
+    LIVE_RESIZE_PAGES = {"routing", "network", "strategy_lab", "profiles", "log", "settings", "about", "kus"}
 
     # ── Когда вкладке давать прокрутку ──────────────────────────────────────
     # Пороги привязаны к минимальному окну (560x420) и его внутреннему месту:
@@ -1986,6 +2042,115 @@ class MainWindow(GlowContainer):
                     pass
 
 
+_RELAUNCH_FLAG = "umbranet.relaunch"
+
+
+def _relaunch_flag_path() -> str:
+    import os
+    import tempfile
+    return os.path.join(tempfile.gettempdir(), _RELAUNCH_FLAG)
+
+
+def consume_relaunch_flag() -> bool:
+    """True, если этот запуск — перезапуск после смены темы."""
+    import os
+    path = _relaunch_flag_path()
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _force_window_foreground(win) -> None:
+    """Достаёт окно на передний план после перезапуска (Windows иначе оставляет его на панели)."""
+    try:
+        win.showNormal()
+        win.raise_()
+        win.activateWindow()
+    except Exception:
+        pass
+    try:
+        import sys
+        if sys.platform != "win32":
+            return
+        import ctypes
+        hwnd = int(win.winId())
+        user32 = ctypes.windll.user32
+        SW_RESTORE = 9
+        user32.ShowWindow(hwnd, SW_RESTORE)
+        user32.SetForegroundWindow(hwnd)
+    except Exception:
+        pass
+
+
+def schedule_relaunch() -> bool:
+    """Запускает новый процесс UmbraNet после выхода текущего.
+
+    Сторожок на python ждёт наш PID (без .bat и кириллицы в cmd) и открывает
+    start.pyw через ShellExecute(SW_SHOWNORMAL) — окно выходит на передний план.
+    """
+    import os
+    import subprocess
+    import sys
+
+    exe = sys.executable
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    start = os.path.join(root, "start.pyw")
+    target = start if os.path.isfile(start) else os.path.abspath(sys.argv[0] if sys.argv else "")
+    if not target or not os.path.isfile(target):
+        log.warning("Не найден start.pyw для перезапуска")
+        return False
+    try:
+        with open(_relaunch_flag_path(), "w", encoding="utf-8") as f:
+            f.write(str(os.getpid()))
+    except Exception as exc:
+        log.debug("Флаг перезапуска не записан: %s", exc)
+    watcher = (
+        "import os,sys,time\n"
+        "pid=int(sys.argv[1]); exe,target,root=sys.argv[2],sys.argv[3],sys.argv[4]\n"
+        "end=time.time()+45\n"
+        "while time.time()<end:\n"
+        "    try:\n"
+        "        os.kill(pid,0)\n"
+        "    except PermissionError:\n"
+        "        time.sleep(0.3); continue\n"
+        "    except OSError:\n"
+        "        break\n"
+        "    time.sleep(0.3)\n"
+        "time.sleep(0.6)\n"
+        "try:\n"
+        "    import ctypes\n"
+        "    ctypes.windll.shell32.ShellExecuteW(None,'open',exe,'\"'+target+'\"',root,1)\n"
+        "except Exception:\n"
+        "    import subprocess\n"
+        "    subprocess.Popen([exe,target],cwd=root,close_fds=True)\n"
+    )
+    try:
+        flags = 0
+        if sys.platform == "win32":
+            flags = (
+                getattr(subprocess, "DETACHED_PROCESS", 0)
+                | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            )
+        subprocess.Popen(
+            [exe, "-c", watcher, str(os.getpid()), exe, target, root],
+            cwd=root,
+            close_fds=True,
+            creationflags=flags,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return True
+    except Exception as exc:
+        log.warning("Не удалось запланировать перезапуск: %s", exc)
+        return False
+
+
 def run():
     import sys
 
@@ -2013,6 +2178,11 @@ def run():
         pass
     win = MainWindow()
     win.show()
+    if consume_relaunch_flag():
+        # После смены темы окно иначе остаётся кнопкой на панели задач.
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, lambda: _force_window_foreground(win))
+        QTimer.singleShot(400, lambda: _force_window_foreground(win))
     try:
         code = app.exec()
     finally:
