@@ -40,8 +40,6 @@ umbranet_ui.json.broken-*
 bogus_ips_cache.json
 # кэш резолва доменов из подписок (core/dns/dns_server.py)
 core/subscribed_domains_cache.json
-# гео-точки для карты: ip -> координаты (Map/core/geo.py, H5)
-geo_cache.json
 
 # ── Резервные копии настроек и сети ─────────────────────────────────────────
 # backups/config/* и backups/network/network_snapshot_*.json

@@ -228,6 +228,32 @@ def test_legacy_field_is_removed_from_config(tmp_path):
     assert cfg["dpi_mode"] == "zapret", "миграция задела нужную настройку"
 
 
+def test_map_home_fields_are_removed_from_config(tmp_path):
+    """Настройки удалённой Кибер-карты вычищаются из памяти и из файла.
+
+    `map_home_lat` / `map_home_lon` — «домашняя» точка карты трафика. Карта
+    удалена из программы целиком, ключи остались в файлах прошлой версии:
+    без миграции человек открывает config.json, видит их и думает, что
+    настройка живёт, хотя код её уже не понимает.
+    """
+    assert "map_home_lat" not in DEFAULT_CONFIG and "map_home_lon" not in DEFAULT_CONFIG
+
+    path = write_json(tmp_path / "config.json",
+                      {"config_version": 1, "map_home_lat": 55.75, "map_home_lon": 37.62,
+                       "listen_port": 5300})
+    cfg = load_config_file(str(path))
+
+    assert "map_home_lat" not in cfg and "map_home_lon" not in cfg, "устаревшие поля остались в конфиге"
+    on_disk = read_json(path)
+    assert "map_home_lat" not in on_disk and "map_home_lon" not in on_disk, "устаревшие поля остались в файле"
+    assert cfg["listen_port"] == 5300, "миграция задела нужную настройку"
+
+    _, report = apply_config_migrations({"config_version": 1, "map_home_lat": 55.75, "map_home_lon": 37.62})
+    assert report["notes"] and "map_home_lat" in report["notes"][0], (
+        "миграция устаревших полей не оставила описания в отчёте"
+    )
+
+
 def test_legacy_fields_registry_explains_itself():
     """Реестр устаревших полей не пустой и каждое поле объяснено.
 

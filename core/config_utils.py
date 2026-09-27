@@ -38,7 +38,7 @@ def is_protected_process(name: str) -> bool:
 # поменяли у него умолчание так, что старый файл нельзя читать как новый.
 # Файл без `config_version` считается версией 0. Миграции — в `_CONFIG_MIGRATIONS`
 # внизу файла; как это работает, описано в `core/schema_version.py`.
-CONFIG_VERSION = 1
+CONFIG_VERSION = 2
 CONFIG_VERSION_KEY = "config_version"
 
 # Поля прошлых версий, которых больше нет. Хранятся не «на всякий случай», а как
@@ -50,6 +50,12 @@ LEGACY_CONFIG_FIELDS = {
     # окно показывало «включено», а трафик шёл без обхода. Теперь поле удаляется,
     # и работа идёт ровно одним путём — через WinWS.
     "use_winws": "выключатель прежнего DPI-движка (движка больше нет, обход всегда через WinWS)",
+    # «Домашняя» точка удалённой Кибер-карты (широта/долгота). Карта трафика
+    # удалена из программы целиком, настройки остались в файлах прошлой версии:
+    # без вычистки человек открывает config.json, видит их и думает, что настройка
+    # живёт, хотя код её уже не понимает.
+    "map_home_lat": "широта домашней точки удалённой Кибер-карты (карты больше нет)",
+    "map_home_lon": "долгота домашней точки удалённой Кибер-карты (карты больше нет)",
 }
 
 
@@ -119,10 +125,6 @@ DEFAULT_CONFIG = {
     "route_all": False,
     "ipv6_priority_enabled": False,
     "routed_subscriptions": [],
-    # Cyber-Map: «домашняя» точка на карте (широта/долгота), от неё рисуются
-    # лучи к серверам. По умолчанию — Москва.
-    "map_home_lat": 55.75,
-    "map_home_lon": 37.62,
 }
 
 
@@ -136,15 +138,6 @@ def _to_bool(value, default=False):
         if value in ("0", "false", "no", "off"):
             return False
     return default
-
-
-def _to_float_in_range(value, default, lo, hi):
-    """Число из конфига, зажатое в диапазон [lo, hi]; иначе default."""
-    try:
-        num = float(value)
-    except (TypeError, ValueError):
-        return default
-    return num if lo <= num <= hi else default
 
 
 def _normalize_domain(raw):
@@ -447,18 +440,21 @@ def sanitize_config(raw_cfg):
         cfg["routed_subscriptions"] = []
         warnings.append("routed_subscriptions должен быть списком")
 
-    # Cyber-Map: домашняя точка (широта/долгота). Некорректные значения
-    # тихо заменяются Москвой — карта не должна ломаться из-за опечатки.
-    cfg["map_home_lat"] = _to_float_in_range(
-        raw_cfg.get("map_home_lat", cfg["map_home_lat"]),
-        cfg["map_home_lat"], -90.0, 90.0,
-    )
-    cfg["map_home_lon"] = _to_float_in_range(
-        raw_cfg.get("map_home_lon", cfg["map_home_lon"]),
-        cfg["map_home_lon"], -180.0, 180.0,
-    )
-
     return cfg, warnings
+
+
+def _drop_legacy_fields(cfg):
+    """Удаляет устаревшие ключи (см. `LEGACY_CONFIG_FIELDS`), возвращая что убрала."""
+    removed = []
+    for field, why in LEGACY_CONFIG_FIELDS.items():
+        if field in cfg:
+            cfg.pop(field, None)
+            removed.append(f"{field} — {why}")
+    return removed
+
+
+def _legacy_fields_note(removed):
+    return "удалены устаревшие поля: " + "; ".join(removed) if removed else None
 
 
 def _migrate_config_0_to_1(cfg):
@@ -469,18 +465,22 @@ def _migrate_config_0_to_1(cfg):
     в файле нельзя: человек открывает config.json, видит там «use_winws: false»
     и уверен, что настройка живёт, хотя код её уже не понимает.
     """
-    removed = []
-    for field, why in LEGACY_CONFIG_FIELDS.items():
-        if field in cfg:
-            cfg.pop(field, None)
-            removed.append(f"{field} — {why}")
-    if not removed:
-        return None
-    return "удалены устаревшие поля: " + "; ".join(removed)
+    return _legacy_fields_note(_drop_legacy_fields(cfg))
+
+
+def _migrate_config_1_to_2(cfg):
+    """Версия 1 → 2: вычистить настройки удалённой Кибер-карты.
+
+    `map_home_lat` / `map_home_lon` — «домашняя» точка карты трафика. Сама карта
+    удалена из программы целиком, настройки остались в файлах прошлой версии.
+    Заодно добираем и прочие устаревшие ключи из `LEGACY_CONFIG_FIELDS`.
+    """
+    return _legacy_fields_note(_drop_legacy_fields(cfg))
 
 
 _CONFIG_MIGRATIONS = {
     0: _migrate_config_0_to_1,
+    1: _migrate_config_1_to_2,
 }
 
 

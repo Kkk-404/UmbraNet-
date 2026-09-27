@@ -29,7 +29,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from Map.core.map_dialog import CyberMapDialog
 from umbranet import theme
 
 log = logging.getLogger("UmbraNet.NetworkView")
@@ -104,10 +103,10 @@ def _wrapped(label: QLabel, min_height: int) -> QLabel:
     """Подпись, которая переносится по строкам и РАСТЁТ под свой текст.
 
     Раньше у таких подписей стояла жёсткая высота («setFixedHeight(42)»), а текста
-    в них больше: у авто-диагностики нужно 84 px, у блока DPI — 70, у описания
-    карты — 42. Лишние строки обрезались прямо посередине — именно это и выглядело
-    «очень криво». Теперь фиксируется только минимум: подпись занимает столько
-    строк, сколько нужно, а карточка (и прокрутка вкладки) растёт вслед за ней.
+    в них больше: у авто-диагностики нужно 84 px, у блока DPI — 70. Лишние
+    строки обрезались прямо посередине — именно это и выглядело «очень криво».
+    Теперь фиксируется только минимум: подпись занимает столько строк, сколько
+    нужно, а карточка (и прокрутка вкладки) растёт вслед за ней.
     """
     label.setWordWrap(True)
     label.setMinimumHeight(min_height)
@@ -123,8 +122,8 @@ def _card(title: str = "") -> tuple[QWidget, QVBoxLayout]:
     lay.setSpacing(10)
     if title:
         t = QLabel(title)
-        # Заголовок тоже переносится: «🌐 Живая карта маршрутизации (Cyber-Map)»
-        # требует 383 px и в узком окне обрезался бы вместе с краем карточки.
+        # Заголовок тоже переносится: длинное название карточки в узком окне
+        # требовало больше места, чем у карточки, и обрезалось бы вместе с краем.
         t.setWordWrap(True)
         t.setStyleSheet(
             f"color:{theme.WHITE};font-size:15px;font-weight:700;"
@@ -304,7 +303,6 @@ class NetworkView(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(14)
 
-        lay.addWidget(self._build_cyber_map())
         lay.addWidget(self._build_answering())
         lay.addWidget(self._build_health_doctor())
         lay.addWidget(self._build_dpi_tools())
@@ -315,18 +313,6 @@ class NetworkView(QWidget):
         outer.addWidget(scroll, 1)
         self.refresh()
 
-    def _build_cyber_map(self):
-        card, lay = _card("🌐 Живая карта маршрутизации (Cyber-Map)")
-        
-        desc = QLabel("Визуализация обхода блокировок. Карта показывает реальные DNS-запросы, прошедшие через UmbraNet: лучи ведут к серверам, локация определяется по IP. Запустите движок — и радар оживёт.")
-        _wrapped(desc, 36)
-        desc.setStyleSheet(f"color:{theme.SUBTEXT};font-size:12px;background:transparent;border:none;")
-        lay.addWidget(desc)
-
-        self._btn_open_map = self._grad_btn("Открыть Кибер-карту", theme.ACCENT, theme.ACCENT2, self._open_cyber_map)
-        lay.addLayout(_button_row(self._btn_open_map))
-        
-        return card
     # ── H3: индикатор того, кто отвечает на DNS-запросы ──────────────────
     # До этого пользователь не видел, что запрос ушёл через запасной транспорт
     # (например, открытым UDP вместо DoH) или через запасного провайдера —
@@ -527,12 +513,6 @@ class NetworkView(QWidget):
         self._btn_copy_winws_diag = self._flat_btn("📋 Скопировать DPI-диагностику", self._copy_winws_diagnostics)
         lay.addLayout(_button_row(self._btn_open_winws_log, self._btn_copy_winws_diag))
         return card
-
-    def _open_cyber_map(self):
-        dialog = CyberMapDialog(self, self.engine)
-        dialog.exec()
-
-
 
     def _build_tools(self):
         card, lay = _card("🧰  Быстрые инструменты")
