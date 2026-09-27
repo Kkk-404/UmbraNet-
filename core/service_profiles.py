@@ -5,7 +5,7 @@ UmbraNet — единые профили сервисов.
 
 Разделение:
   • UI_SERVICE_PROFILES — то, что видит главное меню: название, категория,
-    иконка и runtime_domains для включения/выключения сервиса;
+    иконка, bypass (dns/dpi) и runtime_domains для включения/выключения сервиса;
   • SERVICE_PROFILES — внутренние id для ядра/диагностики/генерации;
   • runtime_domains — домены, которые попадают в active hostlist при выборе
     сервиса в главном меню;
@@ -83,6 +83,7 @@ DISCORD_RUNTIME_DOMAINS = _unique(['dis.gd',
  'cdn.discordapp.com',
  'media.discordapp.net',
  'images-ext-1.discordapp.net',
+ 'images-ext-2.discordapp.net',
  'stable.dl2.discordapp.net',
  'dl.discordapp.net',
  'api.discord.com',
@@ -265,6 +266,27 @@ UI_SERVICE_PROFILES: dict[str, dict[str, Any]] = {
 }
 
 
+# Какой обход нужен сервису в главном меню.
+#   dns — хватает DNS-режима (xbox-dns и т.п.): ChatGPT и большинство AI/SaaS
+#   dpi — нужен DPI/WinWS (SNI/QUIC). В режиме «только DNS» не откроется:
+#         YouTube, Discord, стриминг, игры.
+# Поле можно переопределить в самом профиле ключом "bypass".
+_DPI_UI_SERVICES = {
+    "YouTube",
+    "Spotify",
+    "Twitch",
+    "Discord",
+    "Steam",
+    "Epic Games",
+    "Supercell (Brawl Stars, CoC)",
+    "Stumble Guys",
+    "Destiny 2 (Bungie)",
+}
+
+for _name, _prof in UI_SERVICE_PROFILES.items():
+    _prof.setdefault("bypass", "dpi" if _name in _DPI_UI_SERVICES else "dns")
+
+
 SERVICE_PROFILES: dict[str, dict[str, Any]] = {
     "youtube": {
         "label": "YouTube",
@@ -293,6 +315,8 @@ SERVICE_PROFILES: dict[str, dict[str, Any]] = {
             "gateway.discord.gg",
             "cdn.discordapp.com",
             "media.discordapp.net",
+            "images-ext-1.discordapp.net",
+            "images-ext-2.discordapp.net",
             "discord.media",
         ],
         "probe_family": "discord_gateway_cdn_voice_readiness",
@@ -321,6 +345,33 @@ def ui_services() -> dict[str, tuple[str, str, list[str]]]:
         )
         for name, profile in UI_SERVICE_PROFILES.items()
     }
+
+
+def service_bypass(name: str) -> str:
+    """Какой обход нужен сервису в главном меню: 'dns' или 'dpi'."""
+    prof = UI_SERVICE_PROFILES.get(str(name or "").strip()) or {}
+    mode = str(prof.get("bypass") or "dns").strip().lower()
+    return mode if mode in ("dns", "dpi") else "dns"
+
+
+def service_bypass_map() -> dict[str, str]:
+    """Имя сервиса → 'dns' | 'dpi' (для чипов в списке главного меню)."""
+    return {name: service_bypass(name) for name in UI_SERVICE_PROFILES}
+
+
+def service_allowed_in_mode(name: str, app_mode: str) -> bool:
+    """Можно ли включить сервис в текущем режиме окна.
+
+    combo — всё можно. dns_only не включает DPI-сервисы, dpi_only — DNS-сервисы.
+    """
+    mode = str(app_mode or "").strip().lower()
+    if mode == "combo":
+        return True
+    bypass = service_bypass(name)
+    if mode == "dpi_only":
+        return bypass == "dpi"
+    # dns_only и всё неизвестное
+    return bypass == "dns"
 
 
 def preset_domains() -> set[str]:

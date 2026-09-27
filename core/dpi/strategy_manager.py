@@ -12,6 +12,71 @@ from pathlib import Path
 
 log = logging.getLogger("UmbraNet.StrategyManager")
 
+# Discord-картинки (аватарки, вложения, превью) сидят на Cloudflare CDN.
+# Агрессивный fake+multisplit, который открывает discord.com / gateway, на
+# CDN ломает HTTP/2 и HTTP/3 — чат живой, квадраты вместо картинок.
+# Эти хосты выносим в отдельную мягкую секцию winws.
+_DISCORD_CDN_SUFFIXES = (
+    "cdn.discordapp.com",
+    "media.discordapp.net",
+    "images-ext-1.discordapp.net",
+    "images-ext-2.discordapp.net",
+    "discordapp.net",
+    "discordapp.com",
+    "discordcdn.com",
+    "discord.media",
+    "dl.discordapp.net",
+    "stable.dl2.discordapp.net",
+    "discord-attachments-uploads-prd.storage.googleapis.com",
+)
+
+
+def is_discord_cdn_host(domain: str) -> bool:
+    d = str(domain or "").strip().lower().strip(".")
+    if not d:
+        return False
+    for suffix in _DISCORD_CDN_SUFFIXES:
+        if d == suffix or d.endswith("." + suffix):
+            return True
+    return False
+
+
+def partition_discord_cdn(domains: list[str]) -> tuple[list[str], list[str]]:
+    """Делит цели на «обычные» и Discord CDN (аватарки/картинки)."""
+    main: list[str] = []
+    cdn: list[str] = []
+    for d in domains or []:
+        (cdn if is_discord_cdn_host(d) else main).append(d)
+    return main, cdn
+
+
+def _discord_cdn_section(cdn_hostlist_arg: str) -> list[str]:
+    """Мягкий обход Cloudflare CDN + быстрый срыв QUIC (клиент падает на TCP)."""
+    return [
+        "--filter-tcp=443",
+        cdn_hostlist_arg,
+        "--dpi-desync=fake,split2",
+        "--dpi-desync-split-pos=1",
+        "--dpi-desync-fooling=md5sig",
+        "--dpi-desync-repeats=6",
+        "--new",
+        "--filter-udp=443",
+        cdn_hostlist_arg,
+        "--dpi-desync=fake",
+        "--dpi-desync-any-protocol=1",
+        "--dpi-desync-cutoff=n2",
+        "--dpi-desync-repeats=11",
+        "--dpi-desync-fake-quic={bin}\\quic_initial_www_google_com.bin",
+        "--new",
+    ]
+
+
+def _inject_after_wf(args: list[str], extra: list[str]) -> list[str]:
+    i = 0
+    while i < len(args) and str(args[i]).startswith("--wf-"):
+        i += 1
+    return args[:i] + extra + args[i:]
+
 
 class StrategyManager:
     def __init__(self, strategies_dir=None):
@@ -31,6 +96,7 @@ class StrategyManager:
             self.strategies_dir = Path(str(strategies_dir)).expanduser().resolve()
         self.strategies_dir.mkdir(parents=True, exist_ok=True)
         self.active_hostlist_path = self.strategies_dir / "active_routed_hostlist.txt"
+        self.cdn_hostlist_path = self.strategies_dir / "active_discord_cdn_hostlist.txt"
         self.last_error = ""
         self.last_hostlist_count = 0
 
@@ -85,26 +151,30 @@ class StrategyManager:
                 return data
         return None
 
+    def _write_hostlist_file(self, path: Path, domains: list[str]) -> str:
+        if not domains:
+            try:
+                if path.exists():
+                    path.unlink()
+            except Exception:
+                pass
+            return ""
+        content = "\n".join(domains) + "\n"
+        try:
+            old = path.read_text(encoding="utf-8") if path.exists() else ""
+            if old != content:
+                path.write_text(content, encoding="utf-8")
+        except Exception as exc:
+            self.last_error = f"Не удалось записать hostlist {path.name}: {exc}"
+            log.error(self.last_error)
+            return ""
+        return f"--hostlist={path.absolute()}"
+
     def _write_active_hostlist(self, routed_domains) -> tuple[str, int]:
         domains = self._clean_domains(routed_domains or [])
         self.last_hostlist_count = len(domains)
-        if not domains:
-            try:
-                if self.active_hostlist_path.exists():
-                    self.active_hostlist_path.unlink()
-            except Exception:
-                pass
-            return "", 0
-        content = "\n".join(domains) + "\n"
-        try:
-            old = self.active_hostlist_path.read_text(encoding="utf-8") if self.active_hostlist_path.exists() else ""
-            if old != content:
-                self.active_hostlist_path.write_text(content, encoding="utf-8")
-        except Exception as exc:
-            self.last_error = f"Не удалось записать active hostlist: {exc}"
-            log.error(self.last_error)
-            return "", 0
-        return f"--hostlist={self.active_hostlist_path.absolute()}", len(domains)
+        arg = self._write_hostlist_file(self.active_hostlist_path, domains)
+        return arg, (len(domains) if arg or not domains else 0)
 
     def get_args(self, strategy_id: str, routed_domains=None, require_hostlist: bool = False):
         """Возвращает args для winws.exe.
@@ -134,8 +204,19 @@ class StrategyManager:
             return []
 
         hostlist_arg = ""
+        cdn_arg = ""
         if routed_domains is not None:
-            hostlist_arg, count = self._write_active_hostlist(routed_domains)
+            domains = self._clean_domains(routed_domains or [])
+            self.last_hostlist_count = len(domains)
+            main, cdn = partition_discord_cdn(domains)
+            # Режем только когда есть И обычные цели, И CDN: иначе некуда
+            # деть discord.com / gateway, либо наоборот — один список как раньше.
+            if main and cdn:
+                hostlist_arg = self._write_hostlist_file(self.active_hostlist_path, main)
+                cdn_arg = self._write_hostlist_file(self.cdn_hostlist_path, cdn)
+            else:
+                hostlist_arg = self._write_hostlist_file(self.active_hostlist_path, domains)
+                self._write_hostlist_file(self.cdn_hostlist_path, [])
             if require_hostlist and not hostlist_arg:
                 self.last_error = "Для DPI не выбраны цели: включите сервисы/домены в главном меню."
                 log.warning(self.last_error)
@@ -155,6 +236,9 @@ class StrategyManager:
                 if arg == "--new":
                     new_args.append(hostlist_arg)
             args = new_args
+
+        if cdn_arg:
+            args = _inject_after_wf(args, _discord_cdn_section(cdn_arg))
 
         bin_dir = self.strategies_dir.parent / "bin"
         lists_dir = self.strategies_dir.parent / "lists"

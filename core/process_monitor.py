@@ -69,6 +69,243 @@ def is_process_running(process_name: str) -> bool:
     return False
 
 
+# ── путь к .exe для иконок UI ───────────────────────────────────────────────
+# Отдельно от get_running_processes: тот список дёргают часто (health),
+# и exe там специально НЕ запрашивается — иначе UI зависает. Здесь путь
+# ищем точечно, по имени, с кэшем. UI рисует иконку через QFileIconProvider.
+#
+# Порядок: кэш → типичные папки установки → App Paths в реестре →
+# exe() только у ОДНОГО pid с этим именем (не у всех процессов сразу).
+
+_EXE_LOCK = threading.Lock()
+_EXE_CACHE = {}          # lowercase name -> абсолютный путь
+_EXE_MISS = {}           # lowercase name -> monotonic, негативный кэш
+_EXE_MISS_TTL = 15.0
+
+# (переменная среды, куски пути относительно неё)
+_KNOWN_EXES = {
+    "chrome.exe": (
+        ("LOCALAPPDATA", ("Google", "Chrome", "Application", "chrome.exe")),
+        ("PROGRAMFILES", ("Google", "Chrome", "Application", "chrome.exe")),
+        ("PROGRAMFILES(X86)", ("Google", "Chrome", "Application", "chrome.exe")),
+    ),
+    "msedge.exe": (
+        ("PROGRAMFILES(X86)", ("Microsoft", "Edge", "Application", "msedge.exe")),
+        ("PROGRAMFILES", ("Microsoft", "Edge", "Application", "msedge.exe")),
+    ),
+    "firefox.exe": (
+        ("PROGRAMFILES", ("Mozilla Firefox", "firefox.exe")),
+        ("PROGRAMFILES(X86)", ("Mozilla Firefox", "firefox.exe")),
+        ("LOCALAPPDATA", ("Mozilla Firefox", "firefox.exe")),
+    ),
+    "telegram.exe": (
+        ("APPDATA", ("Telegram Desktop", "Telegram.exe")),
+        ("LOCALAPPDATA", ("Telegram Desktop", "Telegram.exe")),
+    ),
+    "discord.exe": (
+        ("LOCALAPPDATA", ("Discord", "Discord.exe")),
+    ),
+    "code.exe": (
+        ("LOCALAPPDATA", ("Programs", "Microsoft VS Code", "Code.exe")),
+    ),
+}
+
+
+def reset_exe_cache() -> None:
+    """Сброс кэша путей. Нужен тестам и не вызывается из UI."""
+    with _EXE_LOCK:
+        _EXE_CACHE.clear()
+        _EXE_MISS.clear()
+
+
+def _exe_cache_get(key: str):
+    with _EXE_LOCK:
+        return _EXE_CACHE.get(key)
+
+
+def _exe_cache_set(key: str, path: str) -> None:
+    with _EXE_LOCK:
+        _EXE_CACHE[key] = path
+        _EXE_MISS.pop(key, None)
+
+
+def _missed_recently(key: str) -> bool:
+    with _EXE_LOCK:
+        ts = _EXE_MISS.get(key)
+    if ts is None:
+        return False
+    return (time.monotonic() - ts) < _EXE_MISS_TTL
+
+
+def _mark_miss(key: str) -> None:
+    with _EXE_LOCK:
+        _EXE_MISS[key] = time.monotonic()
+
+
+def _interrupted(interrupt) -> bool:
+    if interrupt is None:
+        return False
+    try:
+        return bool(interrupt())
+    except Exception:
+        return False
+
+
+def _norm_exe_name(name: str) -> str:
+    n = str(name or "").strip().lower()
+    if n and not n.endswith(".exe"):
+        n += ".exe"
+    return n
+
+
+def _known_exe(name: str):
+    """Типичные пути установки — без psutil и без реестра."""
+    key = _norm_exe_name(name)
+    for env_var, parts in _KNOWN_EXES.get(key, ()):
+        root = os.environ.get(env_var) or ""
+        if not root:
+            continue
+        candidate = os.path.join(root, *parts)
+        if os.path.isfile(candidate):
+            return candidate
+    if key == "discord.exe":
+        local = os.environ.get("LOCALAPPDATA") or ""
+        base = os.path.join(local, "Discord")
+        if os.path.isdir(base):
+            try:
+                for entry in sorted(os.listdir(base), reverse=True):
+                    if entry.lower().startswith("app-"):
+                        candidate = os.path.join(base, entry, "Discord.exe")
+                        if os.path.isfile(candidate):
+                            return candidate
+            except OSError:
+                pass
+    return None
+
+
+def _app_paths_exe(name: str):
+    """HKCU/HKLM ...\\App Paths\\name.exe — штатный способ Windows найти программу."""
+    if not IS_WINDOWS:
+        return None
+    try:
+        import winreg
+    except ImportError:
+        return None
+    key_name = _norm_exe_name(name)
+    sub = r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\\" + key_name
+    for root in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        try:
+            with winreg.OpenKey(root, sub) as k:
+                try:
+                    val, _ = winreg.QueryValueEx(k, "")
+                except OSError:
+                    val = ""
+                if isinstance(val, str):
+                    val = os.path.expandvars(val.strip().strip('"'))
+                    if val and os.path.isfile(val):
+                        return val
+                try:
+                    folder, _ = winreg.QueryValueEx(k, "Path")
+                except OSError:
+                    folder = ""
+                if isinstance(folder, str) and folder.strip():
+                    candidate = os.path.join(
+                        os.path.expandvars(folder.strip().strip('"')), key_name
+                    )
+                    if os.path.isfile(candidate):
+                        return candidate
+        except OSError:
+            continue
+    return None
+
+
+def _cheap_exe(name: str):
+    return _known_exe(name) or _app_paths_exe(name)
+
+
+def _exe_of_pid(pid: int):
+    try:
+        exe = psutil.Process(pid).exe()
+        if exe and os.path.isfile(exe):
+            return exe
+    except (psutil.Error, OSError, ValueError):
+        return None
+    return None
+
+
+def resolve_process_exes(names, interrupt=None) -> dict:
+    """Имя процесса → абсолютный путь к .exe (только найденные).
+
+    ``interrupt`` — вызываемый объект без аргументов (например
+    QThread.isInterruptionRequested): True = остановиться.
+    """
+    result = {}
+    pending = []
+    seen = set()
+
+    for raw in names or []:
+        if _interrupted(interrupt):
+            return result
+        name = str(raw or "").strip()
+        if not name:
+            continue
+        key = _norm_exe_name(name)
+        if key in seen:
+            path = result.get(next((n for n in result if _norm_exe_name(n) == key), ""))
+            if path:
+                result[name] = path
+            continue
+        seen.add(key)
+
+        cached = _exe_cache_get(key)
+        if cached and os.path.isfile(cached):
+            result[name] = cached
+            continue
+        path = _cheap_exe(key)
+        if path:
+            _exe_cache_set(key, path)
+            result[name] = path
+            continue
+        pending.append(name)
+
+    if not pending or _interrupted(interrupt):
+        return result
+
+    pid_by_name = {}
+    try:
+        for proc in get_running_processes():
+            n = _norm_exe_name(proc.get("name") or "")
+            pid = proc.get("pid")
+            if n and pid is not None and n not in pid_by_name:
+                pid_by_name[n] = pid
+    except Exception:
+        pid_by_name = {}
+
+    for name in pending:
+        if _interrupted(interrupt):
+            break
+        key = _norm_exe_name(name)
+        if _missed_recently(key):
+            continue
+        pid = pid_by_name.get(key)
+        path = _exe_of_pid(pid) if pid is not None else None
+        if path:
+            _exe_cache_set(key, path)
+            result[name] = path
+        else:
+            _mark_miss(key)
+    return result
+
+
+def resolve_process_exe(name: str):
+    """Путь к .exe одного процесса или None, если не нашли."""
+    name = str(name or "").strip()
+    if not name:
+        return None
+    found = resolve_process_exes([name])
+    return found.get(name)
+
+
 def _win_shell():
     """Ленивый импорт модуля системных вызовов (лежит рядом с этим файлом)."""
     import win_shell

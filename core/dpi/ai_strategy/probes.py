@@ -90,8 +90,13 @@ def resolve_probe(host: str, timeout: float = DEFAULT_TIMEOUT) -> dict[str, Any]
 
 
 def https_probe(host: str, path: str = "/", method: str = "HEAD",
-                timeout: float = DEFAULT_TIMEOUT) -> dict[str, Any]:
-    """Минимальная DNS/TCP/TLS/HTTP проверка без внешних зависимостей."""
+                timeout: float = DEFAULT_TIMEOUT, *,
+                success_from: int = 100, success_to: int = 500) -> dict[str, Any]:
+    """Минимальная DNS/TCP/TLS/HTTP проверка без внешних зависимостей.
+
+    По умолчанию любой ответ 1xx–4xx — успех: 403/404 всё равно значат,
+    что TLS дошёл. Для картинок Discord нужен настоящий 2xx (см. avatar).
+    """
     started = _now_ms()
     method = (method or "HEAD").upper()
     dns = resolve_probe(host, timeout=timeout)
@@ -129,7 +134,9 @@ def https_probe(host: str, path: str = "/", method: str = "HEAD",
             status = int(parts[1])
         # Для probes важен факт HTTP-ответа. 403/404 тоже доказывают, что TLS/HTTP
         # дошли до сервера; 5xx считаем слабым, но сетевой путь всё равно есть.
-        ok = 100 <= status < 500
+        # Картинки Discord (avatar GET) требуют 2xx — иначе стратегия «зелёная»,
+        # а аватарки в клиенте не грузятся.
+        ok = success_from <= status < success_to
         return _result(
             "https",
             ok,
@@ -317,7 +324,10 @@ def probe_discord_basic(timeout: float = DEFAULT_TIMEOUT) -> dict[str, Any]:
     Вечный статус «Подключение» в Discord чаще ломается не на сайте, а на связке:
       • API/gateway WebSocket;
       • voice regions API;
-      • CDN/media-домены, через которые клиент получает часть voice/media данных.
+      • CDN/media-домены, через которые клиент получает аватарки и картинки.
+
+    HEAD / на cdn.discordapp.com часто отвечает 403 — TLS есть, а картинка нет.
+    Поэтому аватарку качаем по-настоящему: публичный embed/avatars/0.png, только 2xx.
 
     Полностью проверить реальный звонок без аккаунта/токена невозможно, поэтому
     этот probe называется voice_readiness: он не гарантирует звонок на 100%, но
@@ -328,26 +338,36 @@ def probe_discord_basic(timeout: float = DEFAULT_TIMEOUT) -> dict[str, Any]:
     checks = _run_parallel([
         lambda: https_probe("discord.com", "/api/v10/gateway", "GET", timeout),
         lambda: https_probe("discord.com", "/api/v10/voice/regions", "GET", timeout),
-        lambda: https_probe("cdn.discordapp.com", "/", "HEAD", timeout),
+        lambda: https_probe(
+            "cdn.discordapp.com", "/embed/avatars/0.png", "GET", timeout,
+            success_from=200, success_to=300,
+        ),
         lambda: https_probe("media.discordapp.net", "/", "HEAD", timeout),
         lambda: https_probe("dl.discordapp.net", "/", "HEAD", timeout),
         lambda: websocket_hello_probe("gateway.discord.gg", "/?v=10&encoding=json", timeout),
     ])
-    # Индексы фиксированы порядком списка выше: voice/regions — 1, gateway WS — 5.
+    # Индексы фиксированы порядком списка выше: voice/regions — 1, gateway WS — 5,
+    # CDN-аватар — 2.
     voice_regions = checks[1] if len(checks) > 1 else {}
+    cdn_avatar = checks[2] if len(checks) > 2 else {}
     gateway_ws = checks[5] if len(checks) > 5 else {}
     ok_count = sum(1 for c in checks if c.get("ok"))
     gateway_ok = bool(gateway_ws.get("ok"))
     voice_ok = bool(voice_regions.get("ok"))
-    # Для звонков gateway и voice-regions обязательны. Остальные CDN/media
-    # могут отдавать 403/404, но сам HTTP-ответ засчитывается как доступность пути.
-    ok = ok_count >= 4 and gateway_ok and voice_ok
+    cdn_ok = bool(cdn_avatar.get("ok"))
+    # Gateway и voice — звонки. CDN 2xx — аватарки/картинки. Без CDN стратегия
+    # выглядит «зелёной», а в Discord пустые квадраты вместо изображений.
+    ok = ok_count >= 4 and gateway_ok and voice_ok and cdn_ok
     return {
         "service": "discord",
         "level": "voice_readiness",
         "ok": ok,
         "score": round(ok_count / max(len(checks), 1) * 100),
-        "required": {"gateway_ws": gateway_ok, "voice_regions": voice_ok},
+        "required": {
+            "gateway_ws": gateway_ok,
+            "voice_regions": voice_ok,
+            "cdn_avatar": cdn_ok,
+        },
         "checks": checks,
         "parallel": True,
         "ms": round(_now_ms() - started, 1),
