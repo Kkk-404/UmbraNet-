@@ -1,5 +1,5 @@
 {
-  "config_version": 1,
+  "config_version": 2,
   "xbox_dns_mode": "dot",
   "dpi_mode": "off",
   "dpi_strategy": "uz1",
@@ -33,7 +33,5 @@
   ],
   "route_all": false,
   "ipv6_priority_enabled": false,
-  "routed_subscriptions": [],
-  "map_home_lat": 55.75,
-  "map_home_lon": 37.62
+  "routed_subscriptions": []
 }
