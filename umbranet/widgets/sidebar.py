@@ -153,7 +153,11 @@ class NavButton(QFrame):
         self._render()
 
     def _render(self):
-        text_color = theme.WHITE if self._active else theme.SUBTEXT
+        pill = bool(theme.NAV_ACTIVE_BG)   # светлая тема: белая «таблетка» активного пункта
+        if self._active:
+            text_color = theme.NAV_ACTIVE_TEXT if pill else theme.WHITE
+        else:
+            text_color = (theme.NAV_TEXT or theme.SUBTEXT) if pill else theme.SUBTEXT
         weight = "600" if self._active else "500"
         self._icon.setStyleSheet(
             f"background:transparent;border:none;font-size:16px;color:{text_color};")
@@ -172,6 +176,13 @@ class NavButton(QFrame):
             )
             theme.glow(self, theme.ACCENT3, blur=20, dy=3, alpha=110)
             self._repaint_glow_parent()
+            return
+
+        if self._active and pill:
+            self.setGraphicsEffect(None)
+            self.setStyleSheet(
+                f"NavButton{{background:{theme.NAV_ACTIVE_BG}; border:none; border-radius:14px;}}"
+            )
             return
 
         if self._active:
