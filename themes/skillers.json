@@ -1,7 +1,7 @@
 {
   "label": "Pastel Light",
   "BG": "#f3f1fb",
-  "SIDEBAR": "rgba(132, 104, 240, 0.97)",
+  "SIDEBAR": "qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #9b7cf6, stop:0.55 #7d86f2, stop:1 #6aa6f5)",
   "CARD": "rgba(255, 255, 255, 0.92)",
   "CARD_TOP": "rgba(255, 255, 255, 0.98)",
   "CARD_DARK": "rgba(236, 233, 250, 0.95)",
