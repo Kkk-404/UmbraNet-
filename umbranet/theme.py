@@ -46,7 +46,7 @@ WHITE    = "#ffffff"
 # Темы загружаются динамически из папки themes/ в корне проекта.
 # Любой пользователь может добавить файл-тему .json или удалить его.
 
-DEFAULT_THEME = "neon"
+DEFAULT_THEME = "minimal"
 CURRENT_THEME = DEFAULT_THEME
 
 

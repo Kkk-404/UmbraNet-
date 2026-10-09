@@ -1,0 +1,23 @@
+{
+  "label": "Graphite Minimal",
+  "BG": "#0b0c10",
+  "SIDEBAR": "rgba(15, 16, 21, 0.94)",
+  "CARD": "rgba(22, 24, 31, 0.90)",
+  "CARD_TOP": "rgba(30, 32, 41, 0.55)",
+  "CARD_DARK": "rgba(12, 13, 18, 0.75)",
+  "ROW_BG": "rgba(24, 26, 34, 0.70)",
+  "BORDER": "rgba(255, 255, 255, 0.07)",
+  "INPUT_BG": "rgba(12, 13, 18, 0.85)",
+  "ACCENT": "#7c8cff",
+  "ACCENT2": "#a5b4fc",
+  "ACCENT3": "#5eead4",
+  "GREEN": "#34d399",
+  "RED": "#f87171",
+  "YELLOW": "#fbbf24",
+  "ORANGE": "#fb923c",
+  "PINK": "#f472b6",
+  "TEXT": "#e7e9f0",
+  "SUBTEXT": "#9499ad",
+  "MUTED": "#5c6070",
+  "WHITE": "#ffffff"
+}
