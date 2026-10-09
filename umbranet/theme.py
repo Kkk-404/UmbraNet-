@@ -46,7 +46,7 @@ WHITE    = "#ffffff"
 # Темы загружаются динамически из папки themes/ в корне проекта.
 # Любой пользователь может добавить файл-тему .json или удалить его.
 
-DEFAULT_THEME = "neon"
+DEFAULT_THEME = "skillers"
 CURRENT_THEME = DEFAULT_THEME
 
 
@@ -150,11 +150,19 @@ def _rebuild_modes() -> None:
     BACKEND_TO_UI = {v["backend"]: k for k, v in MODES.items()}
 
 
+# Необязательные токены навигации. None = прежний (тёмный, неоновый) вид.
+# Светлые темы задают их в JSON; при переключении они сбрасываются, чтобы
+# значения одной темы не утекали в другую.
+_OPTIONAL_TOKENS = {"NAV_ACTIVE_BG": None, "NAV_ACTIVE_TEXT": None, "NAV_TEXT": None}
+globals().update(_OPTIONAL_TOKENS)
+
+
 def apply_theme(name: str) -> str:
     """Применяет палитру к токенам темы. Существующие виджеты надо перестроить."""
     global CURRENT_THEME
     name = name if name in THEMES else DEFAULT_THEME
     data = THEMES[name]
+    globals().update(_OPTIONAL_TOKENS)
     for key, value in data.items():
         if key == "label":
             continue
