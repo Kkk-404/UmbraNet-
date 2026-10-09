@@ -654,14 +654,19 @@ class Sidebar(QFrame):
         target = theme.SIDEBAR_W_EXPANDED if self._expanded else theme.SIDEBAR_W_COLLAPSED
 
         # логотип
+        # В светлой теме (сайдбар — цветной градиент) логотип весь белый:
+        # фиолетовый/голубой на градиенте почти не читался.
+        light = bool(theme.NAV_ACTIVE_BG)
+        accent2 = theme.WHITE if light else theme.ACCENT2
+        mark = theme.WHITE if light else theme.ACCENT
         if self._expanded:
             self._logo.setText(
                 f"<span style='font-size:23px;font-weight:800;color:{theme.WHITE};'>"
-                f"Umbra<span style='color:{theme.ACCENT2};'>Net</span></span>"
+                f"Umbra<span style='color:{accent2};'>Net</span></span>"
             )
         else:
             self._logo.setText(
-                f"<span style='font-size:23px;font-weight:800;color:{theme.ACCENT};'>U</span>"
+                f"<span style='font-size:23px;font-weight:800;color:{mark};'>U</span>"
             )
 
         # пункты

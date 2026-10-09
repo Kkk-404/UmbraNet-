@@ -8,7 +8,7 @@ import logging
 import time
 
 from PySide6.QtCore import QByteArray, QEvent, QRect, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QGuiApplication, QPainter, QPixmap, QRadialGradient
+from PySide6.QtGui import QColor, QFont, QGuiApplication, QLinearGradient, QPainter, QPixmap, QRadialGradient
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -317,7 +317,15 @@ class GlowContainer(QWidget):
 
         p = QPainter(self)
         w = self.width()
-        p.fillRect(self.rect(), self._bg_color)
+        if theme.BG_GRAD:
+            # Светлая тема: мягкий диагональный градиент вместо плоской заливки.
+            g = QLinearGradient(0, 0, w, self.height())
+            stops = theme.BG_GRAD
+            for i, col in enumerate(stops):
+                g.setColorAt(i / max(1, len(stops) - 1), QColor(col))
+            p.fillRect(self.rect(), g)
+        else:
+            p.fillRect(self.rect(), self._bg_color)
         p.drawPixmap(w - 400, -200, self._nebula_tr)   # якорь: правый верхний угол
         # Левого нижнего угла в фоне больше нет — см. _rebuild_sprites.
         p.end()

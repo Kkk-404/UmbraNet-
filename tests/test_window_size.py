@@ -1234,8 +1234,26 @@ def test_background_has_no_glow_in_bottom_left_corner(window):
     # как раз накрывало эту полосу, поэтому проверка его поймала бы.
     y = image.height() - 3
     x_start = window.sidebar.width() + 4
+    grad_stops = getattr(theme, "BG_GRAD", None)
+    w_, h_ = image.width(), image.height()
+
+    def expected(x: int) -> QColor:
+        # Светлая тема задаёт градиент фона (QLinearGradient от (0,0) до (w,h)):
+        # ожидаемый цвет точки — интерполяция стопов в точке проекции.
+        if not grad_stops:
+            return base
+        t = (x * w_ + y * h_) / float(w_ * w_ + h_ * h_)
+        t = min(1.0, max(0.0, t)) * (len(grad_stops) - 1)
+        i = min(int(t), len(grad_stops) - 2)
+        f = t - i
+        a, b = QColor(grad_stops[i]), QColor(grad_stops[i + 1])
+        return QColor(round(a.red() + (b.red() - a.red()) * f),
+                      round(a.green() + (b.green() - a.green()) * f),
+                      round(a.blue() + (b.blue() - a.blue()) * f))
+
     for x in range(x_start, min(x_start + 260, image.width() - 1), 20):
         color = QColor(image.pixel(x, y))
+        base = expected(x)
         assert delta(color) <= 6, (
             f"в левом нижнем углу свечение: точка ({x},{y}) = {color.name()}, "
             f"а фон темы {base.name()} — пятно надо убрать"

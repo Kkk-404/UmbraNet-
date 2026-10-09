@@ -153,7 +153,8 @@ def _rebuild_modes() -> None:
 # Необязательные токены навигации. None = прежний (тёмный, неоновый) вид.
 # Светлые темы задают их в JSON; при переключении они сбрасываются, чтобы
 # значения одной темы не утекали в другую.
-_OPTIONAL_TOKENS = {"NAV_ACTIVE_BG": None, "NAV_ACTIVE_TEXT": None, "NAV_TEXT": None}
+_OPTIONAL_TOKENS = {"NAV_ACTIVE_BG": None, "NAV_ACTIVE_TEXT": None, "NAV_TEXT": None,
+                     "BG_GRAD": None}   # BG_GRAD: список цветов фона (линейный градиент)
 globals().update(_OPTIONAL_TOKENS)
 
 

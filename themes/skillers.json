@@ -22,5 +22,10 @@
   "WHITE": "#ffffff",
   "NAV_ACTIVE_BG": "#ffffff",
   "NAV_ACTIVE_TEXT": "#3d2fa0",
-  "NAV_TEXT": "rgba(255, 255, 255, 0.82)"
+  "NAV_TEXT": "rgba(255, 255, 255, 0.82)",
+  "BG_GRAD": [
+    "#f1edff",
+    "#fdf0f7",
+    "#eaf2ff"
+  ]
 }
